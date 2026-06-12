@@ -16,13 +16,20 @@ The harness maps cleanly onto a determine → claim → establish arc:
 | stage | what happens | in the code |
 |-------|--------------|-------------|
 | **determine** | detect the capability gap | the agent emits a `request_tool` call when no promoted tool covers a step |
-| **claim** | author the tool **and** a separate test of its contract | `synthesis.author_tool` + `synthesis.author_test` (two distinct LLM calls) |
+| **claim** | author the tool, and have a **separate, adversarial agent** test its contract | `synthesis.author_tool` (builder) + `synthesis.author_test` (independent tester) |
 | **establish** | verify in a sandbox; promote only on a pass | `sandbox.run_test` → `registry.promote` / `mark_failed` |
 
-Tool and test authorship are **separate LLM calls** on purpose: a single call
-writing both produces a test that mirrors the implementation's bugs. The test
-author sees the spec and signature, and is told to test the contract — not echo
-the code.
+Tool and test are written by **two distinct agents** on purpose. The **tool
+author** (`FORGE_MODEL`) writes and revises the tool. The **test author**
+(`FORGE_TEST_MODEL` — a separate, optionally different model) writes the test
+**black-box**: it sees only the contract (name, signature, purpose), *not* the
+tool's source, and is prompted adversarially to assume the tool is buggy and to
+catch real correctness defects — including degenerate/constant outputs — not
+just shape. A single call writing both, or a tester that reads the
+implementation, produces tests that mirror the tool's bugs; an independent
+black-box adversary catches them. (This is the fix for the first observed
+miss: a structure-only test that promoted a tool whose parsed field was
+silently constant.)
 
 ## Architecture
 
@@ -90,11 +97,14 @@ what makes the run-2 reuse beat work. `--fresh` wipes it.
 ### Model
 
 Defaults to `claude-sonnet-4-6` (current Sonnet — fast and cheap enough for a
-loop that makes many calls). Override with `FORGE_MODEL`:
+loop that makes many calls). The **tool author** uses `FORGE_MODEL`; the
+**test author** is a separate agent on `FORGE_TEST_MODEL` (defaults to
+`FORGE_MODEL`). Pair a Sonnet builder with a stronger Opus adversary:
 
 ```bash
-FORGE_MODEL=claude-opus-4-8 uv run main.py demo/task.txt   # max synthesis quality
-FORGE_MODEL=claude-sonnet-4-5 uv run main.py demo/task.txt # the plan's original pin
+FORGE_MODEL=claude-opus-4-8 uv run main.py demo/task.txt    # max synthesis quality
+FORGE_MODEL=claude-sonnet-4-5 uv run main.py demo/task.txt  # the plan's original pin
+FORGE_TEST_MODEL=claude-opus-4-8 uv run main.py demo/task.txt  # Sonnet builds, Opus tests
 ```
 
 ## The TUI

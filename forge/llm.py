@@ -34,6 +34,12 @@ load_dotenv()
 # FORGE_MODEL=claude-opus-4-8 for maximum synthesis quality.
 DEFAULT_MODEL = os.environ.get("FORGE_MODEL", "claude-sonnet-4-6")
 
+# The test author is a SEPARATE, INDEPENDENT agent from the tool author. By
+# default it runs on the same model, but pointing it at a different (stronger)
+# model makes the adversary more likely to catch the tool author's bugs —
+# e.g. FORGE_TEST_MODEL=claude-opus-4-8 pairs a Sonnet builder with an Opus tester.
+TEST_MODEL = os.environ.get("FORGE_TEST_MODEL", DEFAULT_MODEL)
+
 # USD per 1M tokens (input, output). Used to compute per-call cost for the meter.
 _PRICING: dict[str, tuple[float, float]] = {
     "claude-opus-4-8": (5.0, 25.0),
