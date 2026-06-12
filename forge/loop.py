@@ -311,6 +311,8 @@ def run(
             stable_streak=stable_streak,
             threshold=threshold,
             unfinished=unfinished,
+            toolbox_changed=toolbox_changed,
+            plan_mutated=plan_mutated,
             toolbox_version=state.toolbox_version,
         )
 
