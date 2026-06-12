@@ -31,6 +31,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "verification_failed",
         "tool_revised",
         "tool_promoted",
+        "tool_failed",
         "tool_used",
         "convergence_check",
         "halted",
