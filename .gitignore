@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Run logs (JSONL event streams) — observability artifacts, not source.
+runs/
+
+# Synthesized tools are runtime state, persisted on disk for --keep but not
+# committed. Only the seed manifest.json is tracked.
+forge/tools/*.py
+forge/tools/test_*.py
+
+# macOS
+.DS_Store
