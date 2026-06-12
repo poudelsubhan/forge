@@ -6,10 +6,18 @@ The sequence here *is* the demo:
       → (fail) revise the tool → re-verify ...  (max 3 revisions)
       → promote on pass, or mark failed.
 
-Two LLM calls author the tool and the test **separately** (2A, 2B). This
-separation matters: a single call writing both produces tests that mirror the
-implementation's bugs. The test author sees the spec, signature, and tool
-source, but is instructed to test the *contract*, not echo the code.
+The tool and the test are written by **two distinct agents** (2A, 2B):
+
+  * the **tool author** (FORGE_MODEL) writes — and later revises — the tool;
+  * the **test author** (FORGE_TEST_MODEL — a separate, optionally different,
+    model) writes the test **black-box**: it sees only the contract (name,
+    signature, purpose), NOT the tool's source, and is prompted adversarially
+    to assume the tool is buggy and to catch real correctness defects (including
+    degenerate/constant outputs), not just shape.
+
+This separation matters. A single call writing both — or a tester that reads the
+implementation — produces tests that mirror the tool's bugs. An independent,
+black-box adversary is far likelier to catch them.
 
 The verification gate (2C) is the product: a tool is only promoted after its
 own test passes in the sandbox. On failure the verbatim sandbox stderr is fed
@@ -106,32 +114,29 @@ Proposed signature: {signature}
 
 Write the module now. Output only Python source."""
 
-_AUTHOR_TEST_SYSTEM = """You author a standalone test for a single tool function.
-You see the tool's spec, signature, and source, but you test the CONTRACT — what the function must do — NOT the implementation. Do not just mirror the code's logic.
+_AUTHOR_TEST_SYSTEM = """You are an INDEPENDENT, ADVERSARIAL tester. A different agent wrote the tool; you did NOT see its source and you assume it may be buggy. Your job is to CATCH real defects, not to confirm the happy path. You test the tool from its CONTRACT (name, signature, purpose) alone — black box.
 
 Output ONLY Python source — no prose, no markdown fences.
 
 Hard contract:
 - Import the tool with `from {module} import {name}`.
 - NO test framework. Use bare `assert` and `sys.exit`.
-- 2 to 4 assertions, including at least one edge case.
-- On success: exit 0 (you may `print("PASS")`).
-- On failure: print a short, specific reason and exit nonzero (`sys.exit(1)`), or let an AssertionError propagate.
+- Write 2 to 5 assertions. At least one MUST be a CORRECTNESS invariant that a broken implementation would fail — not merely a shape/type check.
+- REJECT DEGENERATE OUTPUTS. If the contract implies a field should VARY across records (a parsed domain, id, name, score, ...), assert the records are NOT all identical on that field — the same constant or fallback value for every record is a bug. If a field is parsed from external/real-world data, assert at least some values are non-default and plausibly correct (e.g. a real domain contains a dot and is not the catch-all fallback for every single record).
+- Include at least one edge case.
+- Stay resilient to benign content drift: assert on invariants and structure that hold regardless of which specific items are present right now — never on exact bytes or counts that change minute to minute.
+- On success: exit 0 (you may `print("PASS")`). On failure: print a short, specific reason and exit nonzero (`sys.exit(1)`), or let an AssertionError propagate.
 - Imports limited to: {module}, sys, {imports}.
-- Tests may hit real network endpoints (these are web tasks). Keep them fast and resilient to minor content drift — assert on structure, types, and invariants, not exact bytes that may change.
+- Tests may hit real network endpoints (these are web tasks).
 """
 
-_AUTHOR_TEST_USER = """Tool spec:
+_AUTHOR_TEST_USER = """Write an adversarial contract test for this tool. You do NOT get to see its implementation — test it as a black box against its stated contract.
+
   name: {name}
-  purpose: {purpose}
   signature: {signature}
+  purpose: {purpose}
 
-Tool source:
-```python
-{tool_code}
-```
-
-Write the test now. The module to import is `{module}`. Output only Python source."""
+Module to import: `{module}`. Output only Python source."""
 
 _REVISE_SYSTEM = """You revise a tool that FAILED its own test in the sandbox.
 Output ONLY the corrected Python source for the tool module — no prose, no markdown fences.
@@ -190,17 +195,22 @@ def author_tool(spec: ToolSpec) -> str:
     return code
 
 
-def author_test(tool_code: str, spec: ToolSpec, module: str) -> str:
-    """Separate LLM call writes the contract test (sees spec + source)."""
+def author_test(spec: ToolSpec, module: str) -> str:
+    """Independent black-box adversarial test author (FORGE_TEST_MODEL).
+
+    Deliberately does NOT receive the tool source — only the contract — so it
+    cannot mirror the implementation's bugs.
+    """
     system = _AUTHOR_TEST_SYSTEM.format(module=module, name=spec.name, imports=_TOOL_IMPORTS)
     user = _AUTHOR_TEST_USER.format(
         name=spec.name,
         purpose=spec.purpose,
         signature=spec.proposed_signature,
-        tool_code=tool_code,
         module=module,
     )
-    msg = llm.complete(system, [{"role": "user", "content": user}], label="author_test")
+    msg = llm.complete(
+        system, [{"role": "user", "content": user}], model=llm.TEST_MODEL, label="author_test"
+    )
     return _extract_code(llm.text_of(msg))
 
 
@@ -250,7 +260,7 @@ def synthesize(
     tool_path.write_text(tool_code, encoding="utf-8")
     events.emit("tool_drafted", name=spec.name, signature=spec.proposed_signature, chars=len(tool_code))
 
-    test_code = author_test(tool_code, spec, module)
+    test_code = author_test(spec, module)
     test_path.write_text(test_code, encoding="utf-8")
     events.emit("test_drafted", name=spec.name, chars=len(test_code))
 
