@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from forge import events, llm, sandbox
+from forge import brightdata, events, llm, sandbox
 from forge.registry import Registry
 
 MAX_REVISIONS = 3
@@ -39,7 +39,23 @@ EVENT_STDERR_CAP = 4000  # truncate only for the event log; prompts get the full
 
 # Imports a synthesized tool may use — mirrors sandbox.ALLOWED_IMPORTS. Stated
 # in the prompt so the model doesn't reach for something the gate will reject.
-_TOOL_IMPORTS = "httpx, json, re, html.parser, urllib.parse, datetime, collections, math, csv, io, typing"
+_TOOL_IMPORTS = "httpx, bs4 (BeautifulSoup), json, re, html.parser, urllib.parse, datetime, collections, math, csv, io, pathlib, typing"
+
+# Injected into the author/revise prompts only when Bright Data is configured, so
+# synthesized tools can build SELF-CONTAINED live-web capabilities (fetch + parse
+# in one tool) against real-world sites that plain httpx cannot reach.
+_LIVE_WEB_NOTE = """
+- LIVE WEB (Bright Data): you may `import forge_web` and call `forge_web.web_unlock(url, data_format="markdown"|"html") -> str` to fetch ANY page (bypasses bot-blocking/CAPTCHAs) and `forge_web.web_search(query, engine="google") -> str` for current search results. Use these to build self-contained live-web tools — fetch AND parse inside one function — for real sites where plain httpx gets blocked. forge_web reads its own credentials; never handle API keys yourself."""
+
+
+def _imports() -> str:
+    """The import allowlist string shown to the author — plus forge_web when
+    Bright Data is configured."""
+    return _TOOL_IMPORTS + (", forge_web" if brightdata.is_configured() else "")
+
+
+def _live_web() -> str:
+    return _LIVE_WEB_NOTE if brightdata.is_configured() else ""
 
 
 @dataclass
@@ -99,13 +115,20 @@ _AUTHOR_TOOL_SYSTEM = """You author ONE Python tool function for an autonomous a
 Output ONLY the Python source for a single module — no prose, no explanation, no markdown fences.
 
 Hard contract:
-- Exactly ONE public function named `{name}`. Keep this name and its core parameters; you may refine defaults and the return type. Aim to match the proposed signature `{signature}`.
+- Exactly ONE public function named `{name}`. Keep this name. Aim to match the proposed signature `{signature}`, BUT you SHOULD ADD a generalizing parameter (with a default that reproduces the requested behavior) when an axis is plausibly variable for the same logic — e.g. given `fetch_hn_top_stories()` for page 1, author `fetch_hn_top_stories(page: int = 1) -> list[dict]` so the same tool serves page 2+. Adding such a default-valued parameter never breaks the caller (the default preserves the original request) and prevents near-duplicate tools later.
 - Full type hints on every parameter and the return value.
 - A docstring describing what it does, its parameters, and what it returns.
-- Imports limited to: {imports}. NOTHING else. No os, no subprocess, no eval/exec, no file writes.
-- No side effects beyond the return value: no printing, no global mutable state, no writing files.
-- Read-only network access is allowed (use httpx). On error, raise — do not print or swallow.
-- Private helper functions (names starting with `_`) are allowed; there must be exactly one PUBLIC function.
+- Imports limited to: {imports}. NOTHING else. No os, no subprocess, no eval/exec.
+- File I/O is allowed but SCOPED: use only RELATIVE paths in the current working directory (the harness provides a jailed workdir). Never use absolute paths (starting with `/` or `~`) or `..` traversal. Prefer bs4 (BeautifulSoup) for HTML parsing — it is far more robust than hand-rolled html.parser.
+- No printing and no global mutable state. Network access is allowed (use httpx). On error, raise — do not print or swallow.
+- Private helper functions (names starting with `_`) are allowed; there must be exactly one PUBLIC function.{live_web}
+
+Design at the right altitude (think like a senior engineer — not too specific, not too general):
+- Parameterize an axis ONLY where variation shares the SAME underlying logic. A page number, section, count, or query on the same site → a parameter with a sensible default (e.g. `page: int = 1`), because one implementation handles them. Do NOT hardcode such a value as a literal in the body.
+- Do NOT widen an axis that would change the logic itself. Different websites have different HTML, so a single "scrape any site" function is WRONG — it ends up brittle or fakes structure it never parsed. Scope the tool to one site/source and say so.
+- Separate what is STABLE from what VARIES: fetching (HTTP GET, redirects, decode) is the same everywhere; parsing is source-specific. Prefer a small reusable primitive plus a source-specific adapter over one over-parameterized function.
+- State the DOMAIN OF VALIDITY in the docstring — exactly what input the tool is valid for (e.g. "parses Hacker News listing markup"). Never silently claim to handle inputs it was not built for.
+- Litmus test: too-specific bloats the toolbox; too-general lies. Generalize where repetition is plausible for the same logic; specialize where the logic differs.
 """
 
 _AUTHOR_TOOL_USER = """Capability needed: {purpose}
@@ -144,7 +167,7 @@ Output ONLY the corrected Python source for the tool module — no prose, no mar
 Rules:
 - Fix the TOOL, not the test — unless the test is provably wrong (it asserts something the spec does not require). Default to fixing the tool.
 - Keep the same public function name `{name}` and the same import contract.
-- Same import allowlist ({imports}) and no-side-effects rules as before.
+- Same import allowlist ({imports}) and no-side-effects rules as before.{live_web}
 - Address the specific failure shown in the sandbox output.
 """
 
@@ -177,7 +200,7 @@ def author_tool(spec: ToolSpec) -> str:
     """LLM (plain completion) writes the tool module. One corrective retry if
     the output doesn't parse as Python."""
     system = _AUTHOR_TOOL_SYSTEM.format(
-        name=spec.name, signature=spec.proposed_signature, imports=_TOOL_IMPORTS
+        name=spec.name, signature=spec.proposed_signature, imports=_imports(), live_web=_live_web()
     )
     user = _AUTHOR_TOOL_USER.format(
         purpose=spec.purpose, name=spec.name, signature=spec.proposed_signature
@@ -201,7 +224,7 @@ def author_test(spec: ToolSpec, module: str) -> str:
     Deliberately does NOT receive the tool source — only the contract — so it
     cannot mirror the implementation's bugs.
     """
-    system = _AUTHOR_TEST_SYSTEM.format(module=module, name=spec.name, imports=_TOOL_IMPORTS)
+    system = _AUTHOR_TEST_SYSTEM.format(module=module, name=spec.name, imports=_imports())
     user = _AUTHOR_TEST_USER.format(
         name=spec.name,
         purpose=spec.purpose,
@@ -218,7 +241,7 @@ def revise_tool(
     tool_code: str, test_code: str, spec: ToolSpec, result: sandbox.SandboxResult, module: str
 ) -> str:
     """LLM revises the tool given the verbatim sandbox failure."""
-    system = _REVISE_SYSTEM.format(name=spec.name, imports=_TOOL_IMPORTS)
+    system = _REVISE_SYSTEM.format(name=spec.name, imports=_imports(), live_web=_live_web())
     user = _REVISE_USER.format(
         purpose=spec.purpose,
         signature=spec.proposed_signature,

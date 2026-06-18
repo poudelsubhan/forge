@@ -186,6 +186,18 @@ class Registry:
 
     def promote(self, name: str) -> None:
         self._set_status(name, "promoted")
+        # Refresh the stored signature from the ACTUAL authored function — the
+        # builder may have added generalizing parameters (e.g. page: int = 1)
+        # beyond the agent's proposed signature. The state block shows this, so
+        # the agent can see the tool is reusable with different arguments.
+        record = self._find(name)
+        if record is not None:
+            try:
+                fn = self._load_fn(record)
+                record["signature"] = f"{name}{inspect.signature(fn)}"
+                self.save()
+            except Exception:
+                pass  # keep the proposed signature if the function won't load
 
     def mark_failed(self, name: str) -> None:
         self._set_status(name, "failed")

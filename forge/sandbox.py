@@ -8,7 +8,8 @@ Isolation (hackathon-grade — stated honestly in the README):
 
   * **Pre-exec AST check** rejects dangerous code before it ever runs: imports
     outside an allowlist, `os.system` / `subprocess` / `eval` / `exec`, and
-    `open(...)` in a write mode.
+    `open(...)` on an absolute path or `..` traversal. File I/O with relative
+    paths is allowed (Workstream C) — confined to the subprocess cwd jail.
   * **Subprocess** runs in a fresh temp dir containing only the copied tool +
     test files, with the environment stripped to ``PATH`` (no API key leaks
     into synthesized code), a wall-clock timeout, and `.pyc` writes disabled.
@@ -34,10 +35,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-# Imports a synthesized tool/test may use. Network + HTML/parsing + stdlib only.
-ALLOWED_IMPORTS = frozenset(
+# Imports a synthesized tool/test may use, grouped into capability tiers
+# (Workstream C). The effective allowlist is the union of enabled tiers.
+_TIER_STDLIB = frozenset(
     {
-        "httpx",
         "json",
         "re",
         "html",  # covers html.parser
@@ -51,9 +52,22 @@ ALLOWED_IMPORTS = frozenset(
         "string",
         "itertools",
         "functools",
+        "pathlib",  # path handling for scoped file I/O
         "sys",  # tests legitimately use sys.exit
     }
 )
+_TIER_WEB = frozenset(
+    {
+        "httpx",
+        "bs4",  # BeautifulSoup, robust parsing
+        "urllib",
+        "forge_web",  # sanctioned Bright Data helper copied into the jail (web_unlock/web_search)
+    }
+)
+_TIER_FILES = frozenset({"pathlib", "csv", "io"})  # scoped file read/write helpers
+
+# Default policy: stdlib + web + files all on (demo-grade). Narrow per-run later.
+ALLOWED_IMPORTS = _TIER_STDLIB | _TIER_WEB | _TIER_FILES
 
 # Attribute-call names that signal shelling out / dynamic exec.
 _BANNED_ATTR_CALLS = frozenset(
@@ -98,24 +112,25 @@ def ast_check(code: str, extra_allowed: frozenset[str] | set[str] = frozenset())
             if isinstance(func, ast.Attribute) and func.attr in _BANNED_ATTR_CALLS:
                 return f"disallowed call: .{func.attr}()"
             if isinstance(func, ast.Name) and func.id == "open":
-                reason = _check_open_write(node)
+                reason = _check_open(node)
                 if reason:
                     return reason
     return None
 
 
-def _check_open_write(node: ast.Call) -> str | None:
-    """Reject open() in a write/append/exclusive mode (positional or mode=)."""
-    mode: str | None = None
-    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-        if isinstance(node.args[1].value, str):
-            mode = node.args[1].value
-    for kw in node.keywords:
-        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
-            if isinstance(kw.value.value, str):
-                mode = kw.value.value
-    if mode and any(ch in mode for ch in ("w", "a", "x", "+")):
-        return f"disallowed open() mode: {mode!r}"
+def _check_open(node: ast.Call) -> str | None:
+    """Scoped file I/O (Workstream C): open() is allowed for reads and writes,
+    but the path must stay inside the working dir. Reject statically-detectable
+    escapes — absolute paths and `..` traversal in a string-literal path. Paths
+    computed at runtime can't be checked here; the subprocess cwd is the jail.
+    """
+    if node.args and isinstance(node.args[0], ast.Constant):
+        path = node.args[0].value
+        if isinstance(path, str):
+            if path.startswith("/") or path.startswith("~"):
+                return f"disallowed absolute file path: {path!r} (use a relative path in the working dir)"
+            if ".." in path.replace("\\", "/").split("/"):
+                return f"disallowed path traversal: {path!r}"
     return None
 
 
@@ -144,11 +159,24 @@ def run_test(
         shutil.copy(tool_file, tmp_dir / tool_file.name)
         shutil.copy(test_file, tmp_dir / test_file.name)
 
-        # Strip the environment to PATH only — no ANTHROPIC_API_KEY reaches
-        # synthesized code. PATH is kept so the interpreter can resolve.
+        # Copy the sanctioned Bright Data helper into the jail so synthesized
+        # tools can `import forge_web` and fetch live/blocked pages while being
+        # verified for real. (Trusted harness code — not AST-gated.)
+        helper_src = Path(__file__).resolve().parent / "brightdata.py"
+        if helper_src.exists():
+            shutil.copy(helper_src, tmp_dir / "forge_web.py")
+
         import os
 
+        # Strip the environment to PATH — the ANTHROPIC_API_KEY (the secret the
+        # invariant protects) never reaches synthesized code. Bright Data creds
+        # ARE passed through on purpose: that capability is the point, and a
+        # live-web tool can only be verified if its test can actually reach
+        # Bright Data.
         env = {"PATH": os.environ.get("PATH", "")}
+        for key in ("BRIGHTDATA_API_KEY", "BRIGHTDATA_UNLOCKER_ZONE", "BRIGHTDATA_SERP_ZONE", "BRIGHTDATA_TIMEOUT"):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
 
         started = time.monotonic()
         try:
