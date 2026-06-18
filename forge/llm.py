@@ -80,11 +80,16 @@ def complete(
     model: str | None = None,
     tool_choice: dict[str, Any] | None = None,
     label: str = "",
+    on_text: Any = None,
 ) -> anthropic.types.Message:
     """One Anthropic Messages call, fully instrumented.
 
     `label` tags the call (e.g. "agent_turn", "author_tool", "author_test",
     "revise") so the cost meter can attribute spend per stage.
+
+    `on_text`, if given, is a callback invoked with each text delta as it streams
+    — this drives the interactive shell's token-by-token display. When omitted,
+    the call is non-streaming (headless paths are unchanged).
     """
     model = model or DEFAULT_MODEL
     kwargs: dict[str, Any] = {
@@ -102,7 +107,13 @@ def complete(
     import time
 
     started = time.monotonic()
-    message = client().messages.create(**kwargs)
+    if on_text is not None:
+        with client().messages.stream(**kwargs) as stream:
+            for delta in stream.text_stream:
+                on_text(delta)
+            message = stream.get_final_message()
+    else:
+        message = client().messages.create(**kwargs)
     latency = time.monotonic() - started
 
     usage = message.usage

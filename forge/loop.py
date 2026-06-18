@@ -278,6 +278,7 @@ class Session:
         max_turns: int = MAX_TURNS,
         max_revisions: int = MAX_REVISIONS,
         sandbox_timeout: float = 30.0,
+        stream_cb: Any = None,
     ) -> None:
         self.registry = registry
         self.max_turns = max_turns
@@ -285,6 +286,9 @@ class Session:
         self.sandbox_timeout = sandbox_timeout
         self.messages: list[dict[str, Any]] = []
         self._started = False
+        # When set (by the interactive shell), agent-turn text streams through
+        # this callback token-by-token; otherwise turns are non-streaming.
+        self.stream_cb = stream_cb
 
     def submit(self, task: str) -> RunResult:
         registry = self.registry
@@ -311,6 +315,7 @@ class Session:
                 tool_choice={"type": "any", "disable_parallel_tool_use": True},
                 max_tokens=4096,
                 label="agent_turn",
+                on_text=self.stream_cb,
             )
             messages.append({"role": "assistant", "content": resp.content})
 

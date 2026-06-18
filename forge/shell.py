@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, RichLog, Static
@@ -77,6 +78,7 @@ class ForgeShell(App):
     #plan    { height: auto; }
     #events  { height: 1fr; }
     #chat    { height: 1fr; padding: 0 1; }
+    #streaming { height: auto; max-height: 10; padding: 0 1; color: $text-muted; }
     #prompt  { dock: bottom; }
     """
 
@@ -88,6 +90,7 @@ class ForgeShell(App):
         self.session = session
         self._cursor = 0  # how many bus events already rendered to chat
         self._busy = False
+        self._stream_buf = ""  # live token stream for the current prompt
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -97,13 +100,23 @@ class ForgeShell(App):
                 yield Static(id="events")
             with Vertical(id="right"):
                 yield RichLog(id="chat", wrap=True, markup=True, highlight=False)
+                yield Static(id="streaming")
                 yield Input(placeholder="Ask Forge to do something on the live web…", id="prompt")
 
     def on_mount(self) -> None:
+        # Stream agent-turn tokens live (from the worker thread) into the
+        # streaming pane — this is the "thinking displayed" view.
+        self.session.stream_cb = lambda delta: self.call_from_thread(self._on_token, delta)
         self.set_interval(0.2, self._refresh)
         chat = self.query_one("#chat", RichLog)
         chat.write("[bold]Forge[/] ready. Type a task and press enter. The toolbox persists across prompts.")
         self.query_one("#prompt", Input).focus()
+
+    def _on_token(self, delta: str) -> None:
+        """Append a streamed token and repaint the live pane (tail only)."""
+        self._stream_buf += delta
+        tail = self._stream_buf[-1200:]
+        self.query_one("#streaming", Static).update(Text(f"forge · streaming\n{tail}", style="dim italic"))
 
     def _refresh(self) -> None:
         snapshot = list(self.bus.events)
@@ -130,6 +143,8 @@ class ForgeShell(App):
         prompt.value = ""
         prompt.disabled = True
         self._busy = True
+        self._stream_buf = ""
+        self.query_one("#streaming", Static).update("")
         # The user line is rendered by the poll from the run_start/prompt event
         # (Session.submit emits one), so we don't echo here — avoids duplicates.
         self.run_worker(lambda: self.session.submit(task), thread=True, exclusive=True)
@@ -137,6 +152,7 @@ class ForgeShell(App):
     def on_worker_state_changed(self, event) -> None:
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self._busy = False
+            self.query_one("#streaming", Static).update("")  # final answer lives in the chat log
             prompt = self.query_one("#prompt", Input)
             prompt.disabled = False
             prompt.focus()
