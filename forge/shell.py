@@ -91,6 +91,8 @@ class ForgeShell(App):
         self._cursor = 0  # how many bus events already rendered to chat
         self._busy = False
         self._stream_buf = ""  # live token stream for the current prompt
+        self._tick = 0  # drives the thinking-dots animation
+        self._prev_len = 0  # stream length last poll — detects active streaming
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -135,6 +137,19 @@ class ForgeShell(App):
                     chat.write(line)
         self._cursor = len(snapshot)
 
+        # Thinking / streaming indicator: while a turn is producing text, _on_token
+        # paints the live tail; whenever no new tokens arrive, animate dots so the
+        # right side is never blank while the agent works.
+        self._tick += 1
+        if self._busy:
+            cur = len(self._stream_buf)
+            if cur <= self._prev_len:  # no new tokens this tick → show thinking
+                dots = "." * (1 + self._tick % 3)
+                self.query_one("#streaming", Static).update(
+                    Text(f"forge · thinking{dots}", style="dim italic")
+                )
+            self._prev_len = cur
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         task = event.value.strip()
         if not task or self._busy:
@@ -144,6 +159,7 @@ class ForgeShell(App):
         prompt.disabled = True
         self._busy = True
         self._stream_buf = ""
+        self._prev_len = 0
         self.query_one("#streaming", Static).update("")
         # The user line is rendered by the poll from the run_start/prompt event
         # (Session.submit emits one), so we don't echo here — avoids duplicates.
