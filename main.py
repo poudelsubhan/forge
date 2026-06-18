@@ -101,6 +101,23 @@ def cmd_run(task: str, fresh: bool, no_tui: bool) -> int:
         bus.close()
 
 
+def cmd_shell(fresh: bool) -> int:
+    """Launch the interactive shell (Workstream B) — keep prompting a persistent
+    session; toolbox + conversation persist across prompts."""
+    bus = events.EventBus(run_dir=RUNS_DIR)
+    events.set_active(bus)
+    registry = Registry(TOOLS_DIR)
+    if fresh:
+        registry.reset()
+    try:
+        from forge import shell
+
+        shell.run_shell(bus, registry)
+        return 0
+    finally:
+        bus.close()
+
+
 def cmd_replay(path: str, speed: float) -> int:
     from forge import tui
 
@@ -127,8 +144,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--fresh", action="store_true", help="wipe the toolbox before running")
     parser.add_argument("--keep", action="store_true", help="persist the toolbox (default behavior)")
     parser.add_argument("--no-tui", action="store_true", help="headless: plain-text trace, no terminal UI")
+    parser.add_argument("--shell", action="store_true", help="interactive shell: keep prompting a persistent session (TUI left, chat right)")
     args = parser.parse_args(argv)
 
+    if args.shell:
+        print(f"forge shell — model={llm.DEFAULT_MODEL}\n")
+        return cmd_shell(fresh=args.fresh)
     if args.replay:
         return cmd_replay(args.replay, args.speed)
     if not args.task:
