@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import sys
 import time
 import typing
 from pathlib import Path
@@ -27,6 +28,26 @@ from typing import Any, Callable
 from forge import events
 
 VALID_STATUSES = frozenset({"draft", "testing", "failed", "promoted"})
+
+
+def _install_forge_web_alias() -> None:
+    """Make ``import forge_web`` resolve in THIS (live) process.
+
+    Synthesized web tools ``import forge_web`` and call
+    ``forge_web.web_unlock(...)``. In the sandbox that name is satisfied by
+    copying ``brightdata.py`` → ``forge_web.py`` into the jail (see
+    ``sandbox.run_test``). But the registry loads and executes those SAME tool
+    modules directly in the main process, where no ``forge_web`` exists on
+    ``sys.path`` — so a tool that passed verification raised
+    ``ModuleNotFoundError`` the instant it was dispatched, and was silently
+    dropped from ``to_anthropic_tools`` on every turn. Alias the trusted Bright
+    Data module under that name so the sandbox and runtime environments match.
+    The main process holds the Bright Data creds, so the aliased helper fetches
+    for real (idempotent — installed once)."""
+    if "forge_web" not in sys.modules:
+        from forge import brightdata
+
+        sys.modules["forge_web"] = brightdata
 
 _PY_TO_JSON = {
     str: "string",
@@ -106,12 +127,21 @@ class Registry:
         self._write(self.data)
 
     def reset(self) -> None:
-        """Wipe the toolbox (the `--fresh` path): drop manifest + synthesized files."""
-        for record in self.data["tools"]:
-            for key in ("file", "test_file"):
-                target = self.tools_dir / record.get(key, "")
-                if record.get(key) and target.exists():
-                    target.unlink()
+        """Wipe the toolbox (the `--fresh` path): drop every synthesized tool +
+        test file and empty the manifest.
+
+        We sweep the whole tools dir, not just the files named in the manifest.
+        An ORPHAN file — a tool whose synthesis was interrupted before
+        `add_draft` recorded it, or a manually-renamed variant — is not in
+        `self.data["tools"]`, so the old manifest-only loop left it on disk and
+        it polluted the next run (this is why `--fresh` failed to remove a
+        stale `_v3` and it had to be deleted by hand). Every `*.py` here is
+        synthesized runtime state (the synthesized tools are gitignored; only
+        the seed manifest is tracked), so deleting them all is safe."""
+        for path in self.tools_dir.glob("*.py"):
+            if path.name == "__init__.py":
+                continue
+            path.unlink()
         self.data = {"tools": []}
         self.save()
 
@@ -213,6 +243,10 @@ class Registry:
     # --- tool-use bridge -----------------------------------------------------
 
     def _load_fn(self, record: dict[str, Any]) -> Callable[..., Any]:
+        # Synthesized tools may `import forge_web`; make that resolve at runtime
+        # exactly as it does in the verification sandbox (else a verified tool
+        # raises ModuleNotFoundError when actually loaded/dispatched).
+        _install_forge_web_alias()
         path = self.tools_dir / record["file"]
         spec = importlib.util.spec_from_file_location(
             f"forge_tool_{record['name']}", path
@@ -234,10 +268,16 @@ class Registry:
         for record in self.list_promoted():
             try:
                 fn = self._load_fn(record)
-            except Exception:
+            except Exception as exc:
                 # A promoted tool that won't import is a bug, but don't crash the
-                # whole turn — just skip it (it will surface in the event log).
-                events.emit("error", where="to_anthropic_tools", tool=record["name"])
+                # whole turn — just skip it. Include the reason so the failure is
+                # actually diagnosable in the event log (it was logged blind).
+                events.emit(
+                    "error",
+                    where="to_anthropic_tools",
+                    tool=record["name"],
+                    error=f"{type(exc).__name__}: {exc}",
+                )
                 continue
             tools.append(fn_to_schema(record["name"], record["description"], fn))
         return tools

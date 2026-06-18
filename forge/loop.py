@@ -152,9 +152,11 @@ WEB_UNLOCK_TOOL = {
     "description": (
         "Fetch a live web page via Bright Data Web Unlocker — bypasses bot detection "
         "and CAPTCHAs that block plain HTTP. Returns the page as clean markdown (or "
-        "html). Use this to FETCH real-world sites; then request_tool to synthesize a "
-        "PARSER over the returned content. Do NOT synthesize a tool that re-fetches a "
-        "blocked site with raw httpx — fetch here, parse in a synthesized tool."
+        "html). Use this only for a QUICK ONE-OFF read you will answer from directly. "
+        "For structured extraction or anything reusable, do NOT fetch here and pipe to "
+        "a parser (the result is size-capped and won't round-trip) — instead request "
+        "ONE self-contained tool that fetches (via forge_web.web_unlock) AND parses "
+        "internally, returning compact records."
     ),
     "input_schema": {
         "type": "object",
@@ -171,10 +173,14 @@ BRIGHTDATA_NAMES = {"web_search", "web_unlock"}
 
 
 def _builtin_tools() -> list[dict[str, Any]]:
-    """Builtins offered this turn: the always-on three, plus Bright Data's live-
-    web tools when a key is configured (otherwise hidden, so Forge still runs)."""
-    if brightdata.is_configured():
-        return BUILTIN_TOOLS + BRIGHTDATA_TOOLS
+    """Builtins offered to the agent: just plan/request/final_answer.
+
+    The web is reached ONLY through synthesized tools (which use forge_web /
+    Bright Data internally). We deliberately do NOT expose web_unlock/web_search
+    as agent builtins — a one-shot builtin makes the agent skip building a tool
+    (it would fetch and answer directly), which both defeats the self-extension
+    story and round-trips oversized pages through context. One path: build a
+    tool, call the tool."""
     return BUILTIN_TOOLS
 
 SYSTEM_PROMPT = """You are Forge, a self-extending agent. You accomplish a task by maintaining an explicit plan and acting ONE tool per turn.
@@ -187,8 +193,8 @@ Operating rules:
 - Request a genuinely NEW tool only for a different capability, or a different data source whose format existing tools were not built for (different websites have different markup — that is a real new tool, not a duplicate).
 - When a step needs a capability that NO promoted tool provides, call request_tool with a precise name, purpose, and proposed_signature. The harness authors the tool and a test, verifies it in a sandbox, and promotes it only if it passes — then you can call it.
 - NEVER inline-fake or hallucinate a capability you requested a tool for. If you requested fetch_url, do not pretend to know a page's contents — call the tool once it is promoted.
-- For LIVE or up-to-date information (prices, news, anything newer than your training data), use web_search when it is available — it returns current results, not your memory. Never answer time-sensitive questions from memory if web_search is offered.
-- To get a real-world web page, prefer web_unlock (it bypasses bot-blocking that plain httpx hits). The robust pattern: call web_unlock to FETCH the page as markdown/html, then request_tool to synthesize a PARSER that extracts the structured data from that returned content. Fetch with the builtin; parse with a synthesized tool.
+- THE WEB: you have NO built-in web access. To read or extract from ANY website, request_tool a SINGLE self-contained tool that fetches AND parses internally and returns COMPACT structured records (e.g. a list[dict] of title/points/domain). Your synthesized tools are automatically given a live-web fetcher (Bright Data) that bypasses bot-blocking — they just work. Never split fetch and parse into two tools.
+- After a tool is promoted, immediately CALL it to get the data — do not re-plan or re-request a tool that already exists.
 - Design tools to RETURN COMPACT, STRUCTURED DATA (parsed records, counts, small lists) — not large raw blobs. You must pass tool outputs as inputs to later tools, so keeping outputs small keeps the work reliable.
 - Each turn, call EXACTLY ONE tool: update_plan, a promoted tool, request_tool, or final_answer.
 - Keep your plan current: call update_plan again to mark steps done as you finish them.
