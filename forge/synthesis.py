@@ -45,7 +45,8 @@ _TOOL_IMPORTS = "httpx, bs4 (BeautifulSoup), json, re, html.parser, urllib.parse
 # synthesized tools can build SELF-CONTAINED live-web capabilities (fetch + parse
 # in one tool) against real-world sites that plain httpx cannot reach.
 _LIVE_WEB_NOTE = """
-- LIVE WEB (Bright Data): you may `import forge_web` and call `forge_web.web_unlock(url, data_format="markdown"|"html") -> str` to fetch ANY page (bypasses bot-blocking/CAPTCHAs) and `forge_web.web_search(query, engine="google") -> str` for current search results. Use these to build self-contained live-web tools — fetch AND parse inside one function — for real sites where plain httpx gets blocked. forge_web reads its own credentials; never handle API keys yourself."""
+- LIVE WEB (Bright Data) — THIS IS YOUR DEFAULT for fetching web pages: `import forge_web` and call `forge_web.web_unlock(url, data_format="markdown"|"html") -> str` to fetch ANY page (bypasses bot-blocking/CAPTCHAs). Make web_unlock your DEFAULT fetch and build self-contained tools that fetch AND parse in one function. Fall back to raw httpx ONLY if forge_web fails, or for plain JSON APIs / explicitly special cases. Never scrape an HTML site with raw httpx when forge_web is available — it will get blocked.
+- `forge_web.web_search(query, engine="google") -> str` (live SERP) is also importable, but SEARCH IS EXPLORATORY — generally let the agent do search at its level, not baked into a tool. Use web_search inside a synthesized tool ONLY for a genuine "monitor/track a recurring query" capability. forge_web reads its own credentials; never handle API keys yourself."""
 
 
 def _imports() -> str:
