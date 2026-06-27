@@ -46,6 +46,9 @@ from forge import events
 
 REF_PREFIX = "op://"
 
+# Generous enough that a human can approve a Touch ID unlock prompt mid-run.
+OP_READ_TIMEOUT = 120
+
 
 class IdentityError(RuntimeError):
     """A secret could not be brokered — misconfiguration or policy denial."""
@@ -134,19 +137,27 @@ def authorize(secrets: dict[str, str], *, requester: str) -> None:
 
 def _op_read(ref: str) -> str:
     """Resolve one ``op://`` reference to its value via the 1Password CLI. The
-    service-account token in the env IS the harness identity; ``op`` returns the
-    secret on stdout for this process only and writes it nowhere."""
+    harness identity (service-account token, or the signed-in desktop session) is
+    what authorizes the read; ``op`` returns the secret on stdout for this process
+    only and writes it nowhere. Every failure becomes an ``IdentityError`` so a
+    misconfig, a declined unlock, or a timeout fails the synthesis cleanly (the
+    agent replans) rather than crashing the run."""
     try:
         proc = subprocess.run(
             ["op", "read", ref],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=OP_READ_TIMEOUT,
         )
     except FileNotFoundError as exc:  # the `op` CLI is not installed
         raise IdentityError(
             "1Password CLI ('op') not found — install it (brew install 1password-cli) "
             "or point _op_read at the 1Password SDK."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise IdentityError(
+            f"op read for {ref} timed out after {OP_READ_TIMEOUT}s — the 1Password unlock "
+            "prompt was not approved in time. Unlock 1Password (Touch ID) and retry."
         ) from exc
     if proc.returncode != 0:
         raise IdentityError(f"op read failed for {ref}: {proc.stderr.strip() or 'unknown error'}")
