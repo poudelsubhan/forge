@@ -173,6 +173,43 @@ regressions.
   endpoints. That's a feature here, but it means synthesized code can make
   arbitrary outbound requests.
 
+## Agent identity: scoped, just-in-time credentials (1Password)
+
+The sandbox keeps the harness's *own* key out of synthesized code. The identity
+layer (`forge/identity.py`) handles the other direction: when a synthesized tool
+legitimately needs a **real** credential (a GitHub token, a cloud key) to do its
+job, it gets one **without ever holding it**.
+
+The agent declares the credential **by reference**, not value. `request_tool`
+gains a `secrets` field — a map of the ENV-VAR the tool will read to a 1Password
+reference (`{"GITHUB_TOKEN": "op://Forge/github/token"}`). At the moment the tool
+runs, the harness — using *its own* service-account identity, never the agent's —
+resolves that reference, injects only the resolved value into that single run,
+and it's gone when the run ends. The tool reads it with `import forge_id;
+forge_id.get("GITHUB_TOKEN")`; the value never enters the tool source, the
+model's context, or disk.
+
+This follows the agent-identity principles directly:
+
+- **Zero standing privilege.** No secret in `.env`, the prompt, or the tool
+  source. Policy is **default-deny**: a reference is grantable only if its prefix
+  is in `FORGE_OP_ALLOWED`. "A credential that persists is already compromised."
+- **Just-in-time + just-enough.** Resolved per-run, scoped to exactly the
+  references that task declared; nothing standing to steal between calls (the
+  verification subprocess gets the value in its env; live dispatch sets it only
+  for the duration of the call, then restores).
+- **Authority proven at runtime, not stored.** The harness holds the
+  `OP_SERVICE_ACCOUNT_TOKEN` and brokers; the tool proves nothing, holds nothing.
+- **Accountability.** Every resolution and every policy denial is logged to
+  `runs/<ts>.jsonl` **by reference, never by value** (`secret_resolved` /
+  `secret_denied`), binding each secret access to the requesting tool and turn.
+
+It's **dormant by default**: with no `OP_SERVICE_ACCOUNT_TOKEN`, the `secrets`
+capability isn't advertised to the agent and Forge behaves exactly as before.
+Backend is the 1Password CLI (`op read`); swap `identity._op_read` for the
+1Password SDK or an OIDC/Workload-Identity broker without touching the policy or
+audit boundary.
+
 ## A note on tool data flow
 
 Tool outputs flow back through the agent's context and are re-passed as the next

@@ -23,7 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from forge import events, llm
+from forge import events, identity, llm
 from forge.registry import Registry
 from forge.synthesis import MAX_REVISIONS, ToolSpec, synthesize
 
@@ -128,15 +128,55 @@ BUILTIN_TOOLS = [UPDATE_PLAN_TOOL, REQUEST_TOOL_TOOL, FINAL_ANSWER_TOOL]
 BUILTIN_NAMES = {"update_plan", "request_tool", "final_answer"}
 
 
+# Declared on request_tool ONLY when an agent identity is configured: the agent
+# names the credentials a tool needs by REFERENCE (op://vault/item/field), never
+# by value. The harness brokers them just-in-time at runtime (see forge.identity).
+_SECRETS_PROPERTY = {
+    "type": "object",
+    "description": (
+        "Optional. Credentials this tool needs, declared by REFERENCE, as a mapping "
+        "of the ENV-VAR name the tool will read to a 1Password secret reference, e.g. "
+        '{"GITHUB_TOKEN": "op://Forge/github/token"}. Declare a secret ONLY when the '
+        "tool genuinely must authenticate to a real system; the value is brokered at "
+        "runtime and the tool reads it via forge_id.get(NAME). Never put a secret VALUE "
+        "here — only its op:// reference."
+    ),
+    "additionalProperties": {"type": "string"},
+}
+
+_IDENTITY_PROMPT = """
+- CREDENTIALS / IDENTITY: you have NO standing secrets. If a tool must authenticate to a real system, declare the credential it needs in request_tool's `secrets` map — the ENV-VAR name the tool will read mapped to a 1Password reference (op://vault/item/field), a NAME not a value. The harness brokers it just-in-time, scoped to that tool, and the tool reads it with `import forge_id; forge_id.get("ENV_NAME")`. Request the narrowest reference that does the job; never put a secret value anywhere."""
+
+
+def _request_tool_schema() -> dict[str, Any]:
+    """request_tool, with the `secrets` declaration added only when an identity is
+    configured — otherwise the capability isn't advertised at all (no dead field)."""
+    if not identity.is_configured():
+        return REQUEST_TOOL_TOOL
+    tool = {**REQUEST_TOOL_TOOL, "input_schema": {**REQUEST_TOOL_TOOL["input_schema"]}}
+    tool["input_schema"]["properties"] = {
+        **REQUEST_TOOL_TOOL["input_schema"]["properties"],
+        "secrets": _SECRETS_PROPERTY,
+    }
+    return tool
+
+
 def _builtin_tools() -> list[dict[str, Any]]:
-    """Builtins offered to the agent: just plan/request/final_answer.
+    """Builtins offered to the agent: plan/request/final_answer.
 
     The web is reached ONLY through synthesized tools (which fetch with httpx
     internally). We deliberately do NOT expose a one-shot web-fetch builtin — it
     would make the agent skip building a tool (fetch and answer directly), which
     both defeats the self-extension story and round-trips oversized pages through
-    context. One path: build a tool, call the tool."""
-    return BUILTIN_TOOLS
+    context. One path: build a tool, call the tool. request_tool gains a `secrets`
+    field only when an agent identity is configured (see _request_tool_schema)."""
+    return [UPDATE_PLAN_TOOL, _request_tool_schema(), FINAL_ANSWER_TOOL]
+
+
+def _system_prompt() -> str:
+    """System prompt, with the identity/credentials clause appended only when an
+    agent identity is configured."""
+    return SYSTEM_PROMPT + (_IDENTITY_PROMPT if identity.is_configured() else "")
 
 SYSTEM_PROMPT = """You are Forge, a self-extending agent. You accomplish a task by maintaining an explicit plan and acting ONE tool per turn.
 
@@ -265,7 +305,7 @@ class Session:
             events.emit("turn_start", turn=turn, toolbox_version=state.toolbox_version)
             tools = registry.to_anthropic_tools() + _builtin_tools()
             resp = llm.complete(
-                SYSTEM_PROMPT,
+                _system_prompt(),
                 messages,
                 tools=tools,
                 tool_choice={"type": "any", "disable_parallel_tool_use": True},
