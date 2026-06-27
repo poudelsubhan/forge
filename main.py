@@ -51,15 +51,11 @@ def _print_summary(bus: events.EventBus, result) -> None:
 
 
 def _run_headless(bus: events.EventBus, task: str, registry: Registry):
-    """No terminal UI — emit a plain-text trace as events land."""
+    """No terminal UI — run to completion, then dump a plain-text event trace."""
     from forge import loop
 
-    seen = 0
-
-    # Tail the deque from a background thread isn't needed; print after each turn
-    # would require hooks. Simplest: run, then dump the event trace.
     result = loop.run(task, registry)
-    for e in list(bus.events)[seen:]:
+    for e in bus.events:
         t = e["type"]
         if t in ("gap_detected", "tool_promoted", "tool_failed", "verification_failed", "tool_used", "halted", "plan_updated"):
             print(f"  · {t}: {({k: v for k, v in e.items() if k not in ('ts', 'type', 'stderr', 'stdout')})}")

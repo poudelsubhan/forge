@@ -36,10 +36,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-# Imports a synthesized tool/test may use, grouped into capability tiers
-# (Workstream C). The effective allowlist is the union of enabled tiers.
-_TIER_STDLIB = frozenset(
+# The single allowlist of imports a synthesized tool/test may use. This is the
+# one source of truth — synthesis.py derives the author-facing prompt string
+# from it (see synthesis._imports) so the two can never drift.
+ALLOWED_IMPORTS = frozenset(
     {
+        # stdlib
         "json",
         "re",
         "html",  # covers html.parser
@@ -53,21 +55,13 @@ _TIER_STDLIB = frozenset(
         "string",
         "itertools",
         "functools",
-        "pathlib",  # path handling for scoped file I/O
+        "pathlib",  # scoped file I/O
         "sys",  # tests legitimately use sys.exit
-    }
-)
-_TIER_WEB = frozenset(
-    {
+        # web
         "httpx",
-        "bs4",  # BeautifulSoup, robust parsing
-        "urllib",
+        "bs4",  # BeautifulSoup, robust HTML parsing
     }
 )
-_TIER_FILES = frozenset({"pathlib", "csv", "io"})  # scoped file read/write helpers
-
-# Default policy: stdlib + web + files all on (demo-grade). Narrow per-run later.
-ALLOWED_IMPORTS = _TIER_STDLIB | _TIER_WEB | _TIER_FILES
 
 # Attribute-call names that signal shelling out / dynamic exec.
 _BANNED_ATTR_CALLS = frozenset(

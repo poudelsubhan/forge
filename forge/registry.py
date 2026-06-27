@@ -9,9 +9,9 @@ Status lifecycle:  draft → testing → failed | promoted
 Failed tools stay in the manifest (the TUI shows the graveyard — it's part of
 the story).
 
-The seed registry is nearly empty: synthesis must be forced. The two builtins
-(`final_answer`, `request_tool`) live in the loop, not here — this registry
-holds only synthesized tools.
+The seed registry is nearly empty: synthesis must be forced. The three builtins
+(`update_plan`, `request_tool`, `final_answer`) live in the loop, not here —
+this registry holds only synthesized tools.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import importlib.util
 import inspect
 import json
 import time
+import types
 import typing
 from pathlib import Path
 from typing import Any, Callable
@@ -43,6 +44,21 @@ def _now_iso() -> str:
 
 
 def _json_type(annotation: Any) -> str:
+    """Map a Python annotation to a JSON-schema type.
+
+    Resolves typing generics (``list[str]`` → ``list`` → ``"array"``,
+    ``dict[str, int]`` → ``"object"``) via ``get_origin``, and unwraps
+    ``Optional[X]`` / ``X | None`` to the non-None member. Without this an
+    annotated collection parameter silently fell through to ``"string"`` and the
+    agent was told to pass a string where the tool wanted a list.
+    """
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:  # Optional[X] / X | None
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        if args:
+            return _json_type(args[0])
+    if origin is not None:
+        annotation = origin
     return _PY_TO_JSON.get(annotation, "string")
 
 

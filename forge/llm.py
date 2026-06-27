@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from typing import Any
 
 import anthropic
@@ -102,9 +103,6 @@ def complete(
         kwargs["tools"] = tools
     if tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-
-    # time.monotonic via the standard library — measure wall-clock latency.
-    import time
 
     started = time.monotonic()
     if on_text is not None:
