@@ -96,6 +96,22 @@ uv run main.py demo/task2.txt --keep     # NOTE: --keep, toolbox persists
 > the harness's own identity, scoped by a default-deny allowlist, and every access
 > is audited by reference. (See the "Agent identity" section in the README.)
 
+## Beat 4b — reuse is free (optional, 0:15)
+
+```bash
+uv run main.py demo/task3.txt --keep     # NOTE: --keep, toolbox persists
+```
+
+- The Toolbox is already populated (green) and the HN front-page tool from
+  `task.txt` is **reused** — zero synthesis events, the agent goes straight to the
+  domain-frequency compute. Narrate: *"the gate paid off once; reuse is free
+  forever after."*
+
+> **Known gap (see `planv2.md`):** ask for a *different* page (`?p=2`) and the
+> agent may mint a near-duplicate instead of reusing/generalizing the tool. If you
+> hit that live, own it: *"this is exactly the generality problem v2 fixes —
+> tools should be parameterized, not minted per instance."*
+
 ## Beat 5 — the audience task (live, unrehearsed)
 
 Take a suggestion and run it for real. **Steer the audience toward a fetch-and-
