@@ -23,18 +23,22 @@ The design follows the agent-identity principles (AGI House research brief):
     to the run's event stream by *reference*, never by value, so each secret
     access binds to the tool that requested it and the turn it happened on.
 
-Backend: the 1Password CLI (``op read``), authenticated by
-``OP_SERVICE_ACCOUNT_TOKEN``. Swap ``_op_read`` for the 1Password SDK or an
-OIDC / Workload-Identity-Federation broker without touching the policy or audit
-boundary. When no service-account token is present the broker is dormant: Forge
-behaves exactly as before and the ``secrets`` capability is not offered to the
-agent.
+Backend: the 1Password CLI (``op read``), authenticated by EITHER a service
+account (``OP_SERVICE_ACCOUNT_TOKEN`` — a dedicated machine identity, the ideal)
+OR a signed-in user session (desktop-app CLI integration / ``op account add`` —
+the path on a personal 1Password account, where the agent acts under the human's
+unlocked session, still scoped by ``FORGE_OP_ALLOWED``). Swap ``_op_read`` for
+the 1Password SDK or an OIDC / Workload-Identity-Federation broker without
+touching the policy or audit boundary. When neither identity is present the
+broker is dormant: Forge behaves exactly as before and the ``secrets`` capability
+is not offered to the agent.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import functools
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -47,9 +51,47 @@ class IdentityError(RuntimeError):
     """A secret could not be brokered — misconfiguration or policy denial."""
 
 
+def _service_account_token() -> str | None:
+    return os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") or None
+
+
+@functools.lru_cache(maxsize=1)
+def _op_user_account() -> bool:
+    """True if the ``op`` CLI is wired to a user account (desktop-app integration
+    or ``op account add``), so ``op read`` can unlock and resolve references even
+    without a service account — the path for a personal 1Password account.
+
+    Cached: the binding doesn't change within a run, and this avoids shelling out
+    on every turn. Detection is local and never prompts (``op account list`` only
+    lists configured accounts); the actual unlock happens at ``op read`` time.
+    """
+    try:
+        proc = subprocess.run(
+            ["op", "account", "list", "--format=json"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() not in ("", "[]")
+
+
+def identity_mode() -> str:
+    """Which identity the harness will broker with: a dedicated service account
+    (the ideal — a machine identity distinct from the human), a signed-in user
+    session (the agent acts under the human's unlocked session, scoped by
+    FORGE_OP_ALLOWED), or none."""
+    if _service_account_token():
+        return "service-account"
+    if _op_user_account():
+        return "user-session"
+    return "none"
+
+
 def is_configured() -> bool:
-    """True when the harness holds a 1Password service-account identity."""
-    return bool(os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"))
+    """True when the harness holds a 1Password identity to broker with — either a
+    service-account token or a signed-in user session. When False the secrets
+    capability is dormant and Forge runs exactly as before."""
+    return identity_mode() != "none"
 
 
 def _allowlist() -> list[str]:
@@ -75,7 +117,8 @@ def authorize(secrets: dict[str, str], *, requester: str) -> None:
         return
     if not is_configured():
         raise IdentityError(
-            f"agent identity not configured: set OP_SERVICE_ACCOUNT_TOKEN to grant "
+            f"agent identity not configured: set OP_SERVICE_ACCOUNT_TOKEN, or sign in the "
+            f"1Password CLI (desktop-app integration / `op account add`), to grant "
             f"'{requester}' the secrets it declared ({', '.join(secrets.values())})."
         )
     for ref in secrets.values():
@@ -117,10 +160,11 @@ def resolve(secrets: dict[str, str], *, requester: str) -> dict[str, str]:
     returned. ``requester`` is the tool name, for the audit trail.
     """
     authorize(secrets, requester=requester)
+    mode = identity_mode()
     resolved: dict[str, str] = {}
     for env_name, ref in secrets.items():
         resolved[env_name] = _op_read(ref)
-        events.emit("secret_resolved", requester=requester, ref=ref, env=env_name)
+        events.emit("secret_resolved", requester=requester, ref=ref, env=env_name, mode=mode)
     return resolved
 
 

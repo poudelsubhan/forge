@@ -204,11 +204,18 @@ This follows the agent-identity principles directly:
   `runs/<ts>.jsonl` **by reference, never by value** (`secret_resolved` /
   `secret_denied`), binding each secret access to the requesting tool and turn.
 
-It's **dormant by default**: with no `OP_SERVICE_ACCOUNT_TOKEN`, the `secrets`
-capability isn't advertised to the agent and Forge behaves exactly as before.
-Backend is the 1Password CLI (`op read`); swap `identity._op_read` for the
-1Password SDK or an OIDC/Workload-Identity broker without touching the policy or
-audit boundary.
+It's **dormant by default**: with no identity present, the `secrets` capability
+isn't advertised to the agent and Forge behaves exactly as before. The broker
+(1Password CLI, `op read`) accepts either identity:
+
+- a **service account** (`OP_SERVICE_ACCOUNT_TOKEN`, Business/Teams) — a
+  dedicated *machine* identity distinct from the human, the ideal; or
+- a **signed-in user session** (the 1Password desktop-app CLI integration / `op
+  account add`, the path on a *personal* account) — the agent acts under your
+  unlocked session, still scoped by the `FORGE_OP_ALLOWED` policy.
+
+Swap `identity._op_read` for the 1Password SDK or an OIDC/Workload-Identity
+broker without touching the policy or audit boundary.
 
 ## A note on tool data flow
 
