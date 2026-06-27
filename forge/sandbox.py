@@ -27,6 +27,7 @@ sandbox uses this project's venv (where ``httpx`` is installed).
 from __future__ import annotations
 
 import ast
+import os
 import shutil
 import subprocess
 import sys
@@ -61,7 +62,6 @@ _TIER_WEB = frozenset(
         "httpx",
         "bs4",  # BeautifulSoup, robust parsing
         "urllib",
-        "forge_web",  # sanctioned Bright Data helper copied into the jail (web_unlock/web_search)
     }
 )
 _TIER_FILES = frozenset({"pathlib", "csv", "io"})  # scoped file read/write helpers
@@ -159,24 +159,10 @@ def run_test(
         shutil.copy(tool_file, tmp_dir / tool_file.name)
         shutil.copy(test_file, tmp_dir / test_file.name)
 
-        # Copy the sanctioned Bright Data helper into the jail so synthesized
-        # tools can `import forge_web` and fetch live/blocked pages while being
-        # verified for real. (Trusted harness code — not AST-gated.)
-        helper_src = Path(__file__).resolve().parent / "brightdata.py"
-        if helper_src.exists():
-            shutil.copy(helper_src, tmp_dir / "forge_web.py")
-
-        import os
-
         # Strip the environment to PATH — the ANTHROPIC_API_KEY (the secret the
-        # invariant protects) never reaches synthesized code. Bright Data creds
-        # ARE passed through on purpose: that capability is the point, and a
-        # live-web tool can only be verified if its test can actually reach
-        # Bright Data.
+        # invariant protects) never reaches synthesized code. Network stays on
+        # (the demo domain is web tasks), so tests can hit real endpoints.
         env = {"PATH": os.environ.get("PATH", "")}
-        for key in ("BRIGHTDATA_API_KEY", "BRIGHTDATA_UNLOCKER_ZONE", "BRIGHTDATA_SERP_ZONE", "BRIGHTDATA_TIMEOUT"):
-            if os.environ.get(key):
-                env[key] = os.environ[key]
 
         started = time.monotonic()
         try:

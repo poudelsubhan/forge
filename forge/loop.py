@@ -23,7 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from forge import brightdata, events, llm
+from forge import events, llm
 from forge.registry import Registry
 from forge.synthesis import MAX_REVISIONS, ToolSpec, synthesize
 
@@ -127,60 +127,15 @@ FINAL_ANSWER_TOOL = {
 BUILTIN_TOOLS = [UPDATE_PLAN_TOOL, REQUEST_TOOL_TOOL, FINAL_ANSWER_TOOL]
 BUILTIN_NAMES = {"update_plan", "request_tool", "final_answer"}
 
-# --- Bright Data: live-web grounding + acting (offered only when configured) --
-
-WEB_SEARCH_TOOL = {
-    "name": "web_search",
-    "description": (
-        "Search the LIVE web via Bright Data SERP API and get current, structured "
-        "results as markdown. Use this for anything time-sensitive or newer than your "
-        "training data (prices, news, today's facts, who/what is current). Returns "
-        "real search results, not your memory."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "The search query."},
-            "engine": {"type": "string", "enum": ["google", "bing"], "description": "Search engine (default google)."},
-        },
-        "required": ["query"],
-    },
-}
-
-WEB_UNLOCK_TOOL = {
-    "name": "web_unlock",
-    "description": (
-        "Fetch a live web page via Bright Data Web Unlocker — bypasses bot detection "
-        "and CAPTCHAs that block plain HTTP. Returns the page as clean markdown (or "
-        "html). Use this only for a QUICK ONE-OFF read you will answer from directly. "
-        "For structured extraction or anything reusable, do NOT fetch here and pipe to "
-        "a parser (the result is size-capped and won't round-trip) — instead request "
-        "ONE self-contained tool that fetches (via forge_web.web_unlock) AND parses "
-        "internally, returning compact records."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "url": {"type": "string", "description": "The page URL to fetch."},
-            "data_format": {"type": "string", "enum": ["markdown", "html"], "description": "markdown (default) or html for a parser."},
-        },
-        "required": ["url"],
-    },
-}
-
-BRIGHTDATA_TOOLS = [WEB_SEARCH_TOOL, WEB_UNLOCK_TOOL]
-BRIGHTDATA_NAMES = {"web_search", "web_unlock"}
-
 
 def _builtin_tools() -> list[dict[str, Any]]:
     """Builtins offered to the agent: just plan/request/final_answer.
 
-    The web is reached ONLY through synthesized tools (which use forge_web /
-    Bright Data internally). We deliberately do NOT expose web_unlock/web_search
-    as agent builtins — a one-shot builtin makes the agent skip building a tool
-    (it would fetch and answer directly), which both defeats the self-extension
-    story and round-trips oversized pages through context. One path: build a
-    tool, call the tool."""
+    The web is reached ONLY through synthesized tools (which fetch with httpx
+    internally). We deliberately do NOT expose a one-shot web-fetch builtin — it
+    would make the agent skip building a tool (fetch and answer directly), which
+    both defeats the self-extension story and round-trips oversized pages through
+    context. One path: build a tool, call the tool."""
     return BUILTIN_TOOLS
 
 SYSTEM_PROMPT = """You are Forge, a self-extending agent. You accomplish a task by maintaining an explicit plan and acting ONE tool per turn.
@@ -193,7 +148,7 @@ Operating rules:
 - Request a genuinely NEW tool only for a different capability, or a different data source whose format existing tools were not built for (different websites have different markup — that is a real new tool, not a duplicate).
 - When a step needs a capability that NO promoted tool provides, call request_tool with a precise name, purpose, and proposed_signature. The harness authors the tool and a test, verifies it in a sandbox, and promotes it only if it passes — then you can call it.
 - NEVER inline-fake or hallucinate a capability you requested a tool for. If you requested fetch_url, do not pretend to know a page's contents — call the tool once it is promoted.
-- THE WEB: you have NO built-in web access. To read or extract from ANY website, request_tool a SINGLE self-contained tool that fetches AND parses internally and returns COMPACT structured records (e.g. a list[dict] of title/points/domain). Your synthesized tools are automatically given a live-web fetcher (Bright Data) that bypasses bot-blocking — they just work. Never split fetch and parse into two tools.
+- THE WEB: you have NO built-in web access. To read or extract from ANY website, request_tool a SINGLE self-contained tool that fetches (with httpx) AND parses internally and returns COMPACT structured records (e.g. a list[dict] of title/points/domain). Never split fetch and parse into two tools.
 - After a tool is promoted, immediately CALL it to get the data — do not re-plan or re-request a tool that already exists.
 - Design tools to RETURN COMPACT, STRUCTURED DATA (parsed records, counts, small lists) — not large raw blobs. You must pass tool outputs as inputs to later tools, so keeping outputs small keeps the work reliable.
 - Each turn, call EXACTLY ONE tool: update_plan, a promoted tool, request_tool, or final_answer.
@@ -216,11 +171,6 @@ def _format_result(out: Any) -> str:
     if len(text) > RESULT_CAP:
         text = text[:RESULT_CAP] + f"\n...[truncated {len(text) - RESULT_CAP} chars]"
     return text
-
-
-def _short(out: Any, cap: int = 300) -> str:
-    text = out if isinstance(out, str) else repr(out)
-    return text if len(text) <= cap else text[:cap] + "..."
 
 
 def _plan_changed(old: list[PlanStep], new: list[PlanStep]) -> bool:
@@ -405,25 +355,12 @@ class Session:
                             "Replan around this gap (try a different approach or signature)."
                         )
 
-            # --- Bright Data live-web builtins ---
-            elif name in BRIGHTDATA_NAMES:
-                domain_used = True
-                try:
-                    out = brightdata.web_search(**tool_input) if name == "web_search" else brightdata.web_unlock(**tool_input)
-                    result_text = _format_result(out)
-                    state.findings[name] = _short(out)
-                    events.emit("tool_used", name=name, uses=1)
-                except Exception as exc:  # noqa: BLE001 — surface the failure to the agent
-                    result_text = f"Bright Data tool '{name}' failed: {type(exc).__name__}: {exc}"
-                    events.emit("error", where="brightdata", tool=name, error=str(exc))
-
             # --- promoted (domain) tool ---
             else:
                 domain_used = True
                 try:
                     out = registry.dispatch(name, tool_input)
                     result_text = _format_result(out)
-                    state.findings[name] = _short(out)
                 except Exception as exc:  # noqa: BLE001 — surface any tool error to the agent
                     result_text = f"Tool '{name}' raised {type(exc).__name__}: {exc}"
                     events.emit("error", where="dispatch", tool=name, error=str(exc))

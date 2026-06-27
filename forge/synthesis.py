@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from forge import brightdata, events, llm, sandbox
+from forge import events, llm, sandbox
 from forge.registry import Registry
 
 MAX_REVISIONS = 3
@@ -41,22 +41,10 @@ EVENT_STDERR_CAP = 4000  # truncate only for the event log; prompts get the full
 # in the prompt so the model doesn't reach for something the gate will reject.
 _TOOL_IMPORTS = "httpx, bs4 (BeautifulSoup), json, re, html.parser, urllib.parse, datetime, collections, math, csv, io, pathlib, typing"
 
-# Injected into the author/revise prompts only when Bright Data is configured, so
-# synthesized tools can build SELF-CONTAINED live-web capabilities (fetch + parse
-# in one tool) against real-world sites that plain httpx cannot reach.
-_LIVE_WEB_NOTE = """
-- LIVE WEB (Bright Data) — THIS IS YOUR DEFAULT for fetching web pages: `import forge_web` and call `forge_web.web_unlock(url, data_format="markdown"|"html") -> str` to fetch ANY page (bypasses bot-blocking/CAPTCHAs). Make web_unlock your DEFAULT fetch and build self-contained tools that fetch AND parse in one function. Fall back to raw httpx ONLY if forge_web fails, or for plain JSON APIs / explicitly special cases. Never scrape an HTML site with raw httpx when forge_web is available — it will get blocked.
-- `forge_web.web_search(query, engine="google") -> str` (live SERP) is also importable, but SEARCH IS EXPLORATORY — generally let the agent do search at its level, not baked into a tool. Use web_search inside a synthesized tool ONLY for a genuine "monitor/track a recurring query" capability. forge_web reads its own credentials; never handle API keys yourself."""
-
 
 def _imports() -> str:
-    """The import allowlist string shown to the author — plus forge_web when
-    Bright Data is configured."""
-    return _TOOL_IMPORTS + (", forge_web" if brightdata.is_configured() else "")
-
-
-def _live_web() -> str:
-    return _LIVE_WEB_NOTE if brightdata.is_configured() else ""
+    """The import allowlist string shown to the author."""
+    return _TOOL_IMPORTS
 
 
 @dataclass
@@ -122,7 +110,7 @@ Hard contract:
 - Imports limited to: {imports}. NOTHING else. No os, no subprocess, no eval/exec.
 - File I/O is allowed but SCOPED: use only RELATIVE paths in the current working directory (the harness provides a jailed workdir). Never use absolute paths (starting with `/` or `~`) or `..` traversal. Prefer bs4 (BeautifulSoup) for HTML parsing — it is far more robust than hand-rolled html.parser.
 - No printing and no global mutable state. Network access is allowed (use httpx). On error, raise — do not print or swallow.
-- Private helper functions (names starting with `_`) are allowed; there must be exactly one PUBLIC function.{live_web}
+- Private helper functions (names starting with `_`) are allowed; there must be exactly one PUBLIC function.
 
 Design at the right altitude (think like a senior engineer — not too specific, not too general):
 - Parameterize an axis ONLY where variation shares the SAME underlying logic. A page number, section, count, or query on the same site → a parameter with a sensible default (e.g. `page: int = 1`), because one implementation handles them. Do NOT hardcode such a value as a literal in the body.
@@ -168,7 +156,7 @@ Output ONLY the corrected Python source for the tool module — no prose, no mar
 Rules:
 - Fix the TOOL, not the test — unless the test is provably wrong (it asserts something the spec does not require). Default to fixing the tool.
 - Keep the same public function name `{name}` and the same import contract.
-- Same import allowlist ({imports}) and no-side-effects rules as before.{live_web}
+- Same import allowlist ({imports}) and no-side-effects rules as before.
 - Address the specific failure shown in the sandbox output.
 """
 
@@ -201,7 +189,7 @@ def author_tool(spec: ToolSpec) -> str:
     """LLM (plain completion) writes the tool module. One corrective retry if
     the output doesn't parse as Python."""
     system = _AUTHOR_TOOL_SYSTEM.format(
-        name=spec.name, signature=spec.proposed_signature, imports=_imports(), live_web=_live_web()
+        name=spec.name, signature=spec.proposed_signature, imports=_imports()
     )
     user = _AUTHOR_TOOL_USER.format(
         purpose=spec.purpose, name=spec.name, signature=spec.proposed_signature
@@ -242,7 +230,7 @@ def revise_tool(
     tool_code: str, test_code: str, spec: ToolSpec, result: sandbox.SandboxResult, module: str
 ) -> str:
     """LLM revises the tool given the verbatim sandbox failure."""
-    system = _REVISE_SYSTEM.format(name=spec.name, imports=_imports(), live_web=_live_web())
+    system = _REVISE_SYSTEM.format(name=spec.name, imports=_imports())
     user = _REVISE_USER.format(
         purpose=spec.purpose,
         signature=spec.proposed_signature,
