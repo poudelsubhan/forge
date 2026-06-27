@@ -57,7 +57,7 @@ def _run_headless(bus: events.EventBus, task: str, registry: Registry):
     result = loop.run(task, registry)
     for e in bus.events:
         t = e["type"]
-        if t in ("gap_detected", "tool_promoted", "tool_failed", "verification_failed", "tool_used", "halted", "plan_updated"):
+        if t in ("gap_detected", "tool_promoted", "tool_failed", "verification_failed", "tool_used", "halted", "plan_updated", "secret_resolved", "secret_denied"):
             print(f"  · {t}: {({k: v for k, v in e.items() if k not in ('ts', 'type', 'stderr', 'stdout')})}")
     return result
 

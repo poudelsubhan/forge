@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import sys
 import time
 import types
 import typing
@@ -28,6 +29,17 @@ from typing import Any, Callable
 from forge import events
 
 VALID_STATUSES = frozenset({"draft", "testing", "failed", "promoted"})
+
+
+def _install_forge_id_alias() -> None:
+    """Make ``import forge_id`` resolve in THIS (live) process, matching the
+    verification sandbox (where ``secret_access.py`` is copied in as
+    ``forge_id.py``). A promoted tool that reads a brokered secret runs in-process
+    via dispatch, so it needs the same import to resolve here. Idempotent."""
+    if "forge_id" not in sys.modules:
+        from forge import secret_access
+
+        sys.modules["forge_id"] = secret_access
 
 _PY_TO_JSON = {
     str: "string",
@@ -170,7 +182,9 @@ class Registry:
         signature: str,
         description: str,
         test_file: str,
+        secrets: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        secrets = secrets or {}
         record = self._find(name)
         if record is None:
             record = {
@@ -181,6 +195,7 @@ class Registry:
                 "status": "draft",
                 "created_at": _now_iso(),
                 "test_file": test_file,
+                "secrets": secrets,
                 "revisions": 0,
                 "uses": 0,
             }
@@ -192,6 +207,7 @@ class Registry:
                 signature=signature,
                 description=description,
                 test_file=test_file,
+                secrets=secrets,
                 status="draft",
             )
         self.save()
@@ -238,6 +254,9 @@ class Registry:
     # --- tool-use bridge -----------------------------------------------------
 
     def _load_fn(self, record: dict[str, Any]) -> Callable[..., Any]:
+        # Synthesized tools may `import forge_id` to read a brokered secret; make
+        # that resolve at runtime exactly as it does in the verification sandbox.
+        _install_forge_id_alias()
         path = self.tools_dir / record["file"]
         spec = importlib.util.spec_from_file_location(
             f"forge_tool_{record['name']}", path
@@ -274,12 +293,24 @@ class Registry:
         return tools
 
     def dispatch(self, name: str, args: dict[str, Any]) -> Any:
-        """Import the tool module, call the function, increment `uses`."""
+        """Import the tool module, call the function, increment `uses`.
+
+        If the tool declared secrets, they're brokered just-in-time and exposed
+        only for the duration of this call (restored immediately after), so there
+        is nothing standing to steal between dispatches.
+        """
         record = self._find(name)
         if record is None or record["status"] != "promoted":
             raise KeyError(f"no promoted tool named {name!r}")
         fn = self._load_fn(record)
-        result = fn(**args)
+        secrets = record.get("secrets") or {}
+        if secrets:
+            from forge import identity
+
+            with identity.injected(secrets, requester=name):
+                result = fn(**args)
+        else:
+            result = fn(**args)
         record["uses"] = record.get("uses", 0) + 1
         self.save()
         events.emit("tool_used", name=name, uses=record["uses"])
