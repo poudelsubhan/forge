@@ -37,14 +37,22 @@ from forge.registry import Registry
 MAX_REVISIONS = 3
 EVENT_STDERR_CAP = 4000  # truncate only for the event log; prompts get the full text
 
-# Imports a synthesized tool may use — mirrors sandbox.ALLOWED_IMPORTS. Stated
-# in the prompt so the model doesn't reach for something the gate will reject.
-_TOOL_IMPORTS = "httpx, bs4 (BeautifulSoup), json, re, html.parser, urllib.parse, datetime, collections, math, csv, io, pathlib, typing"
+# Friendly labels for the few allowlisted modules whose submodule is what the
+# author actually uses; everything else is shown by its import name.
+_IMPORT_LABELS = {
+    "bs4": "bs4 (BeautifulSoup)",
+    "html": "html.parser",
+    "urllib": "urllib.parse",
+}
 
 
 def _imports() -> str:
-    """The import allowlist string shown to the author."""
-    return _TOOL_IMPORTS
+    """The import allowlist string shown to the author, derived from
+    sandbox.ALLOWED_IMPORTS so the prompt and the AST gate can never drift.
+    `sys` is omitted — tools don't need it (the test prompt adds it explicitly
+    for sys.exit)."""
+    names = sorted(n for n in sandbox.ALLOWED_IMPORTS if n != "sys")
+    return ", ".join(_IMPORT_LABELS.get(n, n) for n in names)
 
 
 @dataclass
