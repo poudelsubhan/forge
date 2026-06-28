@@ -176,22 +176,51 @@ synthesized tools' HTTP) is bounded by a timeout. A run that halts via `cap` (or
 any synthesis exceeding 3 revisions) is flagged loudly — both indicate prompt
 regressions.
 
-## Sandbox limitations:
+## Capability surface & boundary
 
-- **AST allowlist, not a real sandbox.** `sandbox.ast_check` rejects imports
-  outside an allowlist (`httpx`, `json`, `re`, `html.parser`, `urllib.parse`,
-  `datetime`, `collections`, `math`, `csv`, `io`, …), `os.system` / `subprocess`
-  / `eval` / `exec`, and `open(...)` in a write mode. A determined adversary can
-  defeat static analysis; this stops *accidents and obvious misuse*, not attacks.
-- **Subprocess isolation is lightweight.** Tests run via `python -E -s -B` in a
-  temp dir containing only the copied tool + test, with the environment stripped
-  to `PATH` (the API key never reaches synthesized code), a 30s wall-clock
-  timeout, and `.pyc` writes off. We use `-E -s` rather than `-I` deliberately:
-  `-I` implies `-P`, which would remove the temp dir from `sys.path` and break
-  the test's `import <tool>` of its sibling file.
-- **Network is intentionally ON.** The demo domain is web tasks; tests hit real
-  endpoints. That's a feature here, but it means synthesized code can make
-  arbitrary outbound requests.
+What a synthesized tool *can* do is defined entirely by the AST allowlist in
+`sandbox.py` (`ALLOWED_IMPORTS`) — the one source of truth, from which the
+author-facing prompt is derived so the two never drift. The capacity is
+deliberately small and web-shaped:
+
+- **Fetch from the network.** `httpx` for arbitrary outbound HTTP(S),
+  `urllib.parse` for URL handling. Network is intentionally ON — the demo domain
+  is web tasks, and tests hit real endpoints.
+- **Parse the web.** `bs4` (BeautifulSoup) + `html` for HTML; `json` and `csv`
+  for structured payloads.
+- **Read & write local files** — `open()` (read *and* write) + `pathlib`, but
+  **scoped to the subprocess cwd jail**: relative paths only, no absolute paths,
+  no `..` traversal.
+- **Transform data** — `re`, `string`, `datetime`, `collections`, `itertools`,
+  `functools`, `math`, `io`, `typing`.
+- **Call authenticated APIs without holding the secret** — `forge_id.get(...)`,
+  the brokered just-in-time credential read (see the identity section below).
+  This is what lets a tool hit, say, the GitHub API without the token ever
+  entering its source.
+
+Everything outside that list is rejected **before the code runs**, which is also
+the boundary of what the harness can build:
+
+- **No shelling out / dynamic exec.** `os.system` / `subprocess` / `eval` /
+  `exec` / `__import__` / `compile` are all rejected — as is `import os` itself.
+- **No off-allowlist libraries** (`requests`, `pandas`, `numpy`, …). If a tool
+  needs it, the allowlist has to grow first.
+- **No file access outside the cwd jail.**
+
+In one line: Forge builds **web/API fetchers (including authenticated ones),
+HTML/JSON/CSV parsers, scoped local file read/write tools, and pure
+data-transform tools** — and nothing that shells out or imports off-allowlist.
+
+This is an **AST allowlist, not a real sandbox**: a determined adversary can
+defeat static analysis; it stops *accidents and obvious misuse*, not attacks.
+Isolation around it is lightweight by design:
+
+- **Subprocess isolation.** Tests run via `python -E -s -B` in a temp dir
+  containing only the copied tool + test, with the environment stripped to
+  `PATH` (the API key never reaches synthesized code), a 30s wall-clock timeout,
+  and `.pyc` writes off. We use `-E -s` rather than `-I` deliberately: `-I`
+  implies `-P`, which would remove the temp dir from `sys.path` and break the
+  test's `import <tool>` of its sibling file.
 
 ## Agent identity: scoped, just-in-time credentials (1Password)
 
