@@ -1,5 +1,4 @@
-A GitHub personal access token is stored in 1Password at the reference
-op://Personal/github/credential.
+A GitHub personal access token is stored in 1Password at the reference op://Personal/github/credential.
 
 Build a single self-contained tool that makes a real AUTHENTICATED call to the
 GitHub REST API using that token (an "Authorization: Bearer <token>" header) and
