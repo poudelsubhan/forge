@@ -20,9 +20,12 @@ from __future__ import annotations
 from typing import Any
 
 from rich.text import Text
+from textual import events as textual_events
+from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Input, RichLog, Static
+from textual.message import Message
+from textual.widgets import RichLog, Static, TextArea
 from textual.worker import WorkerState
 
 from forge import events, loop
@@ -76,6 +79,46 @@ def _chat_line(e: dict[str, Any]) -> str | None:
     return None
 
 
+class TaskArea(TextArea):
+    """A multi-line prompt box that grows with its content, then scrolls.
+
+    A plain single-line ``Input`` truncates a pasted paragraph at the first
+    newline, so we use a ``TextArea`` — it accepts multi-line paste verbatim and,
+    with ``height: auto`` + ``max-height`` in CSS, expands as you type/paste up to
+    a cap and scrolls beyond it.
+
+    Submit semantics are chat-style, since the agent expects whole tasks:
+
+      * **Enter** submits the current text (posts ``TaskArea.Submitted``).
+      * **Shift+Enter** / **Ctrl+J** insert a literal newline.
+
+    (Pasted newlines are preserved regardless — only typed Enter is repurposed.)
+    """
+
+    class Submitted(Message):
+        """Posted when the user presses Enter on a non-empty task."""
+
+        def __init__(self, task_area: "TaskArea", value: str) -> None:
+            self.task_area = task_area
+            self.value = value
+            super().__init__()
+
+    def _on_key(self, event: textual_events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            value = self.text.strip()
+            if value:
+                self.post_message(self.Submitted(self, value))
+            return
+        if event.key in ("shift+enter", "ctrl+j"):
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
+        super()._on_key(event)
+
+
 class ForgeShell(App):
     CSS = """
     #left  { width: 58%; }
@@ -85,7 +128,7 @@ class ForgeShell(App):
     #events  { height: 1fr; }
     #chat    { height: 1fr; padding: 0 1; }
     #streaming { height: auto; max-height: 10; padding: 0 1; color: $text-muted; }
-    #prompt  { dock: bottom; }
+    #prompt  { dock: bottom; height: auto; min-height: 3; max-height: 10; }
     """
 
     TITLE = "Forge — interactive shell"
@@ -109,7 +152,12 @@ class ForgeShell(App):
             with Vertical(id="right"):
                 yield RichLog(id="chat", wrap=True, markup=True, highlight=False)
                 yield Static(id="streaming")
-                yield Input(placeholder="Ask Forge to do something on the live web…", id="prompt")
+                yield TaskArea(
+                    id="prompt",
+                    soft_wrap=True,
+                    tab_behavior="focus",
+                    placeholder="Ask Forge to do something on the live web…  (Enter to send · Shift+Enter for newline)",
+                )
 
     def on_mount(self) -> None:
         # Stream agent-turn tokens live (from the worker thread) into the
@@ -118,7 +166,7 @@ class ForgeShell(App):
         self.set_interval(0.2, self._refresh)
         chat = self.query_one("#chat", RichLog)
         chat.write("[bold]Forge[/] ready. Type a task and press enter. The toolbox persists across prompts.")
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", TaskArea).focus()
 
     def _on_token(self, delta: str) -> None:
         """Append a streamed token and repaint the live pane (tail only)."""
@@ -156,12 +204,13 @@ class ForgeShell(App):
                 )
             self._prev_len = cur
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(TaskArea.Submitted)
+    def on_task_submitted(self, event: TaskArea.Submitted) -> None:
         task = event.value.strip()
+        prompt = self.query_one("#prompt", TaskArea)
         if not task or self._busy:
             return
-        prompt = self.query_one("#prompt", Input)
-        prompt.value = ""
+        prompt.clear()
         prompt.disabled = True
         self._busy = True
         self._stream_buf = ""
@@ -175,7 +224,7 @@ class ForgeShell(App):
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self._busy = False
             self.query_one("#streaming", Static).update("")  # final answer lives in the chat log
-            prompt = self.query_one("#prompt", Input)
+            prompt = self.query_one("#prompt", TaskArea)
             prompt.disabled = False
             prompt.focus()
 
