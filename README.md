@@ -9,6 +9,26 @@ when a turn cap is hit.
 > **Core invariant: no tool enters the registry without passing its own test in
 > the sandbox. The verification gate is the product.**
 
+## determine · claim · establish
+
+The harness maps cleanly onto a determine → claim → establish arc:
+
+| stage | what happens | in the code |
+|-------|--------------|-------------|
+| **determine** | detect the capability gap | the agent emits a `request_tool` call when no promoted tool covers a step |
+| **claim** | author the tool, and have a **separate, adversarial agent** test its contract | `synthesis.author_tool` (builder) + `synthesis.author_test` (independent tester) |
+| **establish** | verify in a sandbox; promote only on a pass | `sandbox.run_test` → `registry.promote` / `mark_failed` |
+
+Tool and test are written by **two distinct agents** on purpose. The **tool
+author** (`FORGE_MODEL`) writes and revises the tool. The **test author**
+(`FORGE_TEST_MODEL,` a separate, optionally different model) writes the test
+**black box**: it sees only the contract (name, signature, purpose), *not* the
+tool's source, and is prompted adversarially to assume the tool is buggy and to
+catch real correctness defects, including degenerate/constant outputs, not
+just shape. A single call writing both, or a tester that reads the
+implementation, produces tests that mirror the tool's bugs; an independent
+black box adversary catches them.
+
 ## Concrete Execution
 
 1. What happens in a normal turn
@@ -181,9 +201,9 @@ legitimately needs a **real** credential (a GitHub token, a cloud key) to do its
 job, it gets one **without ever holding it**.
 
 The agent declares the credential **by reference**, not value. `request_tool`
-gains a `secrets` field — a map of the ENV-VAR the tool will read to a 1Password
+gains a `secrets` field: a map of the ENV-VAR the tool will read to a 1Password
 reference (`{"GITHUB_TOKEN": "op://Forge/github/token"}`). At the moment the tool
-runs, the harness — using *its own* service-account identity, never the agent's —
+runs, the harness (using *its own* service-account identity, never the agent's) 
 resolves that reference, injects only the resolved value into that single run,
 and it's gone when the run ends. The tool reads it with `import forge_id;
 forge_id.get("GITHUB_TOKEN")`; the value never enters the tool source, the
@@ -242,23 +262,3 @@ main.py           # CLI entry
 scripts/stats.py  # run-file metrics aggregator
 demo/             # task.txt, task2.txt, SCRIPT.md (90s beat sheet)
 ```
-
-## determine · claim · establish
-
-The harness maps cleanly onto a determine → claim → establish arc:
-
-| stage | what happens | in the code |
-|-------|--------------|-------------|
-| **determine** | detect the capability gap | the agent emits a `request_tool` call when no promoted tool covers a step |
-| **claim** | author the tool, and have a **separate, adversarial agent** test its contract | `synthesis.author_tool` (builder) + `synthesis.author_test` (independent tester) |
-| **establish** | verify in a sandbox; promote only on a pass | `sandbox.run_test` → `registry.promote` / `mark_failed` |
-
-Tool and test are written by **two distinct agents** on purpose. The **tool
-author** (`FORGE_MODEL`) writes and revises the tool. The **test author**
-(`FORGE_TEST_MODEL,` a separate, optionally different model) writes the test
-**black box**: it sees only the contract (name, signature, purpose), *not* the
-tool's source, and is prompted adversarially to assume the tool is buggy and to
-catch real correctness defects, including degenerate/constant outputs, not
-just shape. A single call writing both, or a tester that reads the
-implementation, produces tests that mirror the tool's bugs; an independent
-black box adversary catches them.
