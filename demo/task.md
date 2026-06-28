@@ -1,0 +1,1 @@
+Fetch the Hacker News front page (https://news.ycombinator.com/), extract the top 15 stories (title, points, and domain)
