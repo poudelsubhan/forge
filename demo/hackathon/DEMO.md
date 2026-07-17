@@ -16,7 +16,7 @@ encore if judges ask; it costs ~$0.40 + ~$0.01 of x402 payments and takes
 
 > "Agent loops today make a bad trade: either you pre-grant your agent every
 > tool and privilege it might need — and pray — or you lock it down and it's
-> useless. We built Forge, a loop where **nothing is granted. Everything is
+> useless. I built Forge, a loop where **nothing is granted. Everything is
 > earned, and everything is verified** — tools, privileges, even the compute."
 
 ## 0:20 – 0:50 — Architecture (one slide / README diagram)
