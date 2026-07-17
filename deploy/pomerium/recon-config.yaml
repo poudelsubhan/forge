@@ -1,0 +1,8 @@
+# Pomerium recon config: gate a local upstream, no IdP (public route toggle).
+# Tier semantics for the trust ratchet: a route EXISTS+public at a tier, or it doesn't.
+address: :8901
+insecure_server: true
+routes:
+  - from: http://fetch.localhost:8901
+    to: http://127.0.0.1:8900
+    allow_public_unauthenticated_access: false
