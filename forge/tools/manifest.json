@@ -1,3 +1,30 @@
 {
-  "tools": []
+  "tools": [
+    {
+      "name": "get_github_user_summary",
+      "file": "get_github_user_summary.py",
+      "signature": "get_github_user_summary(max_recent_repos: int = 5) -> dict",
+      "description": "Authenticate to the GitHub REST API using a personal access token stored in 1Password, and return a compact dict with: the authenticated user's login, their public_repos count, and the names of their 5 most-recently-updated repositories. The token is read internally via forge_id and never exposed.",
+      "status": "promoted",
+      "created_at": "2026-06-27T20:38:30",
+      "test_file": "test_get_github_user_summary.py",
+      "secrets": {
+        "GITHUB_TOKEN": "op://Personal/github/credential"
+      },
+      "revisions": 0,
+      "uses": 1
+    },
+    {
+      "name": "fetch_hn_front_page",
+      "file": "fetch_hn_front_page.py",
+      "signature": "fetch_hn_front_page(n: int = 15) -> list[dict]",
+      "description": "Fetch the Hacker News front page (https://news.ycombinator.com/), parse the HTML, and return a list of the top N stories, each as a compact dict with: title (str), points (int), and domain (str). Uses httpx to fetch and BeautifulSoup to parse.",
+      "status": "promoted",
+      "created_at": "2026-06-27T20:39:46",
+      "test_file": "test_fetch_hn_front_page.py",
+      "secrets": {},
+      "revisions": 1,
+      "uses": 1
+    }
+  ]
 }
