@@ -60,6 +60,7 @@ class ViewModel:
         self.plan_stable: bool | None = None
         self.trust_tier: str | None = None  # None until a --trust run announces itself
         self.last_tier_change: tuple[str, str] | None = None
+        self.final_answer: str | None = None
 
     def _tool(self, name: str) -> dict[str, Any]:
         return self.tools.setdefault(
@@ -117,6 +118,9 @@ class ViewModel:
             self.llm_calls += 1
         elif t == "halted":
             self.halted = e.get("reason")
+        elif t == "agent_message":
+            if e.get("final"):
+                self.final_answer = e.get("text", "")
         elif t == "trust_enabled":
             self.trust_tier = e.get("tier", "tier0")
         elif t == "trust_tier_changed":
@@ -158,6 +162,10 @@ def _toolbox_panel(vm: ViewModel) -> Panel:
 
 def _plan_panel(vm: ViewModel) -> Panel:
     rows: list[Any] = []
+    if vm.task:
+        task = vm.task if len(vm.task) <= 220 else vm.task[:220] + "…"
+        rows.append(Text(f"task: {task}", style="italic dim"))
+        rows.append(Text(""))
     if not vm.plan:
         rows.append(Text("(no plan yet)", style="dim"))
     for i, step in enumerate(vm.plan, 1):
@@ -265,6 +273,14 @@ def _stream_panel(vm: ViewModel, height: int = 12) -> Panel:
             border_style="red",
         )
         body = Group(body, fail)
+    if vm.halted == "final_answer" and vm.final_answer:
+        answer = vm.final_answer if len(vm.final_answer) <= 700 else vm.final_answer[:700] + " …"
+        done = Panel(
+            Text(answer, style="green"),
+            title="[bold green]FINAL ANSWER[/]",
+            border_style="green",
+        )
+        body = Group(body, done)
     cost = f"${vm.cost:.4f} · {vm.llm_calls} calls · {vm.in_tokens}+{vm.out_tokens} tok"
     return Panel(body, title="[bold]Event stream[/]", subtitle=cost, border_style="cyan")
 
