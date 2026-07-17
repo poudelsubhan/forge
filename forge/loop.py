@@ -18,6 +18,7 @@ report convergence quality (converged/answered vs. cap).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from forge import events, llm
 from forge.registry import Registry
-from forge.synthesis import MAX_REVISIONS, ToolSpec, synthesize
+from forge.synthesis import MAX_REVISIONS, SynthesisResult, ToolSpec, synthesize
 
 MAX_TURNS = 25
 RESULT_CAP = 12_000  # bound any tool result fed back into the agent's context
@@ -215,6 +216,43 @@ def _result(state: AgentState, reason: str, turns: int) -> RunResult:
     )
 
 
+def _acquire_or_synthesize(
+    registry: Registry, spec: ToolSpec, max_revisions: int, timeout: float
+) -> SynthesisResult:
+    """Make-or-buy (Phase 2.1): when the acquisition channel is configured
+    (FORGE_ZERO_BRIDGE_URL, set by --trust), try to BUY the capability from
+    Zero.xyz first; on no candidate, a Pomerium-denied bridge, or a failed
+    verification, fall through to building via synthesis exactly as before.
+    Every decision is emitted as a `make_or_buy` event."""
+    bridge_url = os.environ.get("FORGE_ZERO_BRIDGE_URL")
+    if not bridge_url:
+        events.emit(
+            "make_or_buy", name=spec.name, decision="build",
+            reason="acquisition channel disabled (no FORGE_ZERO_BRIDGE_URL)",
+        )
+    else:
+        syn = None
+        try:
+            from forge import acquire
+
+            syn = acquire.acquire(registry, spec, bridge_url=bridge_url)
+        except Exception as exc:  # noqa: BLE001 — a broken buy path must never kill the loop
+            events.emit("error", where="acquire", tool=spec.name, error=str(exc))
+        if syn is not None and syn.status == "promoted":
+            events.emit(
+                "make_or_buy", name=spec.name, decision="buy",
+                reason="marketplace capability passed the adversarial gate",
+            )
+            return syn
+        reason = (
+            "no healthy marketplace candidate"
+            if syn is None
+            else f"acquired candidate failed verification: {(syn.last_error or '')[:160]}"
+        )
+        events.emit("make_or_buy", name=spec.name, decision="build", reason=reason)
+    return synthesize(registry, spec, max_revisions=max_revisions, timeout=timeout)
+
+
 # --- the loop ----------------------------------------------------------------
 
 
@@ -337,15 +375,20 @@ class Session:
                         f"Tool '{spec.name}' already exists and is promoted; call it directly."
                     )
                 else:
-                    syn = synthesize(
+                    syn = _acquire_or_synthesize(
                         registry, spec, max_revisions=self.max_revisions, timeout=self.sandbox_timeout
                     )
                     state.toolbox_version += 1
                     toolbox_changed = True
                     if syn.status == "promoted":
+                        provenance = (
+                            "ACQUIRED from the Zero.xyz marketplace and"
+                            if (syn.record or {}).get("via") == "zero"
+                            else "built and"
+                        )
                         result_text = (
-                            f"Tool '{spec.name}' PROMOTED — it passed its own test after "
-                            f"{syn.revisions} revision(s). Signature: {syn.record['signature']}. "
+                            f"Tool '{spec.name}' {provenance} PROMOTED — it passed its own test "
+                            f"after {syn.revisions} revision(s). Signature: {syn.record['signature']}. "
                             "You can call it now."
                         )
                     else:

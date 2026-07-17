@@ -17,7 +17,7 @@ import json
 import subprocess
 from typing import Any
 
-from forge import events, sandbox, synthesis, zero_bridge
+from forge import events, llm, sandbox, synthesis, zero_bridge
 from forge.registry import Registry
 from forge.synthesis import SynthesisResult, ToolSpec
 
@@ -93,69 +93,68 @@ def discover(gap: str, limit: int = 3) -> list[dict[str, Any]]:
     return kept
 
 
-_WRAPPER_TEMPLATE = '''"""Acquired via Zero.xyz: {label} ({price}/call, x402 protocol).
+def probe(candidate: dict[str, Any], bridge_url: str) -> str:
+    """Make ONE real (paid) call through the bridge and return the raw CLI
+    output. Raises on any failure — including a Pomerium 403 at tier0, which
+    makes a denied BUY fail fast before any LLM spend."""
+    import httpx
 
-{purpose}
-
-Domain of validity: returns the live payload of the "{label}" marketplace
-capability; structure follows that feed. Raises RuntimeError when the paid
-call cannot be completed (e.g. wallet unfunded or capability unavailable).
-"""
-import json
-import re
-
-import httpx
-
-
-def _extract(text: str) -> dict:
-    """Best-effort structured payload from CLI output: trailing JSON object,
-    else every number labelled by nearby text, else the raw text."""
-    for match in reversed(list(re.finditer(r"\\{{[^{{}}]*\\}}|\\[[^\\[\\]]*\\]", text, re.DOTALL))):
-        try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            continue
-        return parsed if isinstance(parsed, dict) else {{"items": parsed}}
-    numbers = re.findall(r"[-+]?\\d[\\d,]*\\.?\\d*", text)
-    if numbers:
-        return {{"values": numbers[:8], "text": text.strip()[-400:]}}
-    return {{"text": text.strip()[-400:]}}
-
-
-def {name}() -> dict:
-    """{purpose}
-
-    Returns a dict: {{{{'source': capability name, 'data': parsed payload}}}}.
-    """
     resp = httpx.post(
-        "{bridge}/call",
-        json={{"token": "{token}"}},
+        f"{bridge_url.rstrip('/')}/call",
+        json={"token": candidate.get("token")},
         timeout=120.0,
     )
     resp.raise_for_status()
     body = resp.json()
     if not body.get("ok"):
-        raise RuntimeError("acquired capability failed: " + (body.get("output") or "")[:400])
-    return {{"source": "{label}", "data": _extract(body.get("output") or "")}}
-'''
+        raise RuntimeError((body.get("output") or "bridge call failed")[:400])
+    return body.get("output") or ""
 
 
-def wrap(candidate: dict[str, Any], spec: ToolSpec, bridge_url: str) -> str:
-    """Generate wrapper-tool source for `candidate` satisfying `spec`.
+_WRAPPER_SYSTEM = """You author ONE Python adapter function wrapping a PAID marketplace capability for an autonomous agent.
+Output ONLY the Python source for a single module — no prose, no markdown fences.
 
-    v1 wrappers are zero-argument (the capability call is fully specified by
-    its token); the docstring states the domain of validity.
-    """
+Hard contract:
+- Exactly ONE public function named `{name}` matching the signature `{signature}`. Full type hints and a docstring stating what it returns and that each call costs money ({price}).
+- Imports limited to: json, re, httpx. Nothing else.
+- Obtain the data ONLY via: httpx.post("{bridge}/call", json={{"token": "{token}"}}, timeout=120.0). The response is JSON: {{"ok": bool, "output": str}}. If not ok (or the HTTP call fails), raise RuntimeError including an excerpt of the output — never return fabricated data.
+- `output` is CLI text whose payload is typically a trailing JSON object. A REAL probe of this exact capability produced the output shown by the user. Parse robustly (do not assume exact whitespace), extract the payload, and ADAPT it to the return contract implied by the signature and purpose — use the exact key names and types the contract asks for.
+- No prints, no global state. Raise on any parse failure.
+"""
+
+_WRAPPER_USER = """Capability: {label}
+Purpose (the contract): {purpose}
+Signature: {signature}
+
+Verbatim output of a real probe call to this capability:
+---
+{probe_output}
+---
+
+Write the adapter module now. Output only Python source."""
+
+
+def wrap(candidate: dict[str, Any], spec: ToolSpec, bridge_url: str, probe_output: str) -> str:
+    """LLM-authored adapter: honors the spec's return contract by adapting the
+    REAL probed payload, not a guessed shape. The adversarial black-box test
+    still judges the result — the adapter earns promotion like any built tool."""
     label = candidate.get("canonicalName") or candidate.get("name") or "capability"
     price = (candidate.get("pricing") or {}).get("summary") or "paid"
-    return _WRAPPER_TEMPLATE.format(
-        label=label,
-        price=price,
-        purpose=spec.purpose,
+    system = _WRAPPER_SYSTEM.format(
         name=spec.name,
+        signature=spec.proposed_signature,
+        price=price,
         bridge=bridge_url.rstrip("/"),
         token=candidate.get("token"),
     )
+    user = _WRAPPER_USER.format(
+        label=label,
+        purpose=spec.purpose,
+        signature=spec.proposed_signature,
+        probe_output=probe_output[:3000],
+    )
+    msg = llm.complete(system, [{"role": "user", "content": user}], label="author_wrapper")
+    return synthesis._extract_code(llm.text_of(msg))
 
 
 def acquire(
@@ -175,11 +174,21 @@ def acquire(
         return None
     candidate = candidates[0]
 
+    # One real paid call up front. A Pomerium denial (tier0) or unfunded wallet
+    # fails HERE — fast, before any LLM spend, and without touching the
+    # registry (a policy denial is not a defect, so it costs no trust).
+    try:
+        probe_output = probe(candidate, bridge_url)
+        events.emit("acquire_probe", token=candidate.get("token"), ok=True, chars=len(probe_output))
+    except Exception as exc:  # noqa: BLE001
+        events.emit("acquire_probe", token=candidate.get("token"), ok=False, error=str(exc)[:300])
+        return SynthesisResult(spec, "failed", None, 0, f"probe failed: {exc}")
+
     module = spec.name
     tool_path = registry.tools_dir / f"{module}.py"
     test_path = registry.tools_dir / f"test_{module}.py"
 
-    tool_code = wrap(candidate, spec, bridge_url)
+    tool_code = wrap(candidate, spec, bridge_url, probe_output)
     tool_path.write_text(tool_code, encoding="utf-8")
     events.emit(
         "acquire_wrapped",

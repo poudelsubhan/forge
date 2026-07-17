@@ -186,7 +186,11 @@ class Registry:
             }
             self.data["tools"].append(record)
         else:
-            # Re-drafting an existing (e.g. previously failed) tool.
+            # Re-drafting an existing (e.g. previously failed) tool. Clear any
+            # acquisition provenance — a failed BUY redrafted by synthesis is a
+            # BUILD (acquire re-stamps `via` after this call on its own path).
+            record.pop("via", None)
+            record.pop("capability_token", None)
             record.update(
                 file=file,
                 signature=signature,
