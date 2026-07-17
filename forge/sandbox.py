@@ -60,9 +60,6 @@ ALLOWED_IMPORTS = frozenset(
         # web
         "httpx",
         "bs4",  # BeautifulSoup, robust HTML parsing
-        # identity: the brokered-secret read helper (forge_id.get), copied into
-        # the jail. Tools read granted credentials through this, never os.environ.
-        "forge_id",
     }
 )
 
@@ -135,15 +132,7 @@ def run_test(
     tool_file: Path | str,
     test_file: Path | str,
     timeout: float = 30.0,
-    secret_refs: dict[str, str] | None = None,
 ) -> SandboxResult:
-    """Verify a tool against its test in an isolated subprocess.
-
-    ``secret_refs`` (ENV_VAR -> op:// reference) are brokered just-in-time by the
-    identity layer right before the subprocess starts and injected into its env
-    for that one run, so a tool that needs a real credential can be verified for
-    real without the secret ever touching its source or the agent's context.
-    """
     tool_file = Path(tool_file)
     test_file = Path(test_file)
     tool_code = tool_file.read_text(encoding="utf-8")
@@ -164,28 +153,10 @@ def run_test(
         shutil.copy(tool_file, tmp_dir / tool_file.name)
         shutil.copy(test_file, tmp_dir / test_file.name)
 
-        # Copy the sanctioned secret-read helper into the jail so a tool can
-        # `import forge_id` and read a brokered credential. (Trusted harness code,
-        # not AST-gated; exposes only forge_id.get(name).)
-        helper_src = Path(__file__).resolve().parent / "secret_access.py"
-        if helper_src.exists():
-            shutil.copy(helper_src, tmp_dir / "forge_id.py")
-
         # Strip the environment to PATH — the ANTHROPIC_API_KEY (the secret the
         # invariant protects) never reaches synthesized code. Network stays on
         # (the demo domain is web tasks), so tests can hit real endpoints.
         env = {"PATH": os.environ.get("PATH", "")}
-
-        # Broker any declared secrets just-in-time and inject ONLY their resolved
-        # values into this child's env — scoped to this run, gone when it exits.
-        # The OP service-account token stays in the parent; the child never sees it.
-        if secret_refs:
-            from forge import identity
-
-            try:
-                env.update(identity.resolve(secret_refs, requester=tool_module))
-            except identity.IdentityError as exc:
-                return SandboxResult(False, "", f"identity error: {exc}", 0.0, str(exc))
 
         started = time.monotonic()
         try:
