@@ -58,10 +58,13 @@ class ViewModel:
         self.last_failure: tuple[str, str] | None = None
         self.toolbox_stable: bool | None = None
         self.plan_stable: bool | None = None
+        self.trust_tier: str | None = None  # None until a --trust run announces itself
+        self.last_tier_change: tuple[str, str] | None = None
 
     def _tool(self, name: str) -> dict[str, Any]:
         return self.tools.setdefault(
-            name, {"status": "draft", "revisions": 0, "uses": 0, "signature": name}
+            name,
+            {"status": "draft", "revisions": 0, "uses": 0, "signature": name, "via": "built"},
         )
 
     def ingest(self, e: dict[str, Any]) -> None:
@@ -114,6 +117,15 @@ class ViewModel:
             self.llm_calls += 1
         elif t == "halted":
             self.halted = e.get("reason")
+        elif t == "trust_enabled":
+            self.trust_tier = e.get("tier", "tier0")
+        elif t == "trust_tier_changed":
+            self.trust_tier = e.get("to_tier", self.trust_tier)
+            self.last_tier_change = (e.get("from_tier", ""), e.get("to_tier", ""))
+        elif t == "acquire_wrapped":
+            tool = self._tool(e["name"])
+            tool["via"] = "zero"
+            tool["status"] = "draft"
 
 
 # --- panels ------------------------------------------------------------------
@@ -122,15 +134,18 @@ class ViewModel:
 def _toolbox_panel(vm: ViewModel) -> Panel:
     table = Table(expand=True, show_edge=False, pad_edge=False)
     table.add_column("tool", overflow="fold")
+    table.add_column("src", justify="center")
     table.add_column("status", justify="center")
     table.add_column("rev", justify="right")
     table.add_column("use", justify="right")
     if not vm.tools:
-        table.add_row(Text("(empty — synthesis not yet triggered)", style="dim"), "", "", "")
+        table.add_row(Text("(empty — synthesis not yet triggered)", style="dim"), "", "", "", "")
     for name, tool in vm.tools.items():
         style = _STATUS_STYLE.get(tool["status"], "white")
+        via = tool.get("via", "built")
         table.add_row(
             Text(name, style=style),
+            Text("acquired", style="bold cyan") if via == "zero" else Text("built", style="dim"),
             Text(tool["status"], style=style),
             str(tool["revisions"]),
             str(tool["uses"]),
@@ -156,8 +171,14 @@ def _plan_panel(vm: ViewModel) -> Panel:
             return "[dim]–[/]"
         return "[green]✓[/]" if flag else "[red]✗[/]"
 
+    trust = ""
+    if vm.trust_tier is not None:
+        tier_style = {"tier0": "red", "tier1": "yellow", "tier2": "green"}.get(vm.trust_tier, "white")
+        trust = f"  ·  trust: [bold {tier_style}]{vm.trust_tier}[/]"
+        if vm.last_tier_change:
+            trust += f" [dim]({vm.last_tier_change[0]}→{vm.last_tier_change[1]})[/]"
     indicator = Text.from_markup(
-        f"toolbox stable: {fmt(vm.toolbox_stable)}  ·  plan stable: {fmt(vm.plan_stable)}"
+        f"toolbox stable: {fmt(vm.toolbox_stable)}  ·  plan stable: {fmt(vm.plan_stable)}{trust}"
     )
     body = Group(*rows, Text(""), indicator)
     subtitle = f"turn {vm.turn}" + (f" · HALTED ({vm.halted})" if vm.halted else "")
@@ -178,6 +199,13 @@ _EVENT_STYLE = {
     "plan_updated": "white",
     "convergence_check": "dim",
     "agent_message": "white",
+    "make_or_buy": "bold yellow",
+    "trust_tier_changed": "bold magenta",
+    "trust_enabled": "magenta",
+    "acquire_search": "cyan",
+    "acquire_candidate": "cyan",
+    "acquire_wrapped": "cyan",
+    "acquire_probe": "cyan",
 }
 
 
@@ -208,6 +236,20 @@ def _event_line(e: dict[str, Any]) -> Text:
         detail = tag + e.get("text", "")[:80].replace("\n", " ")
     elif t == "llm_call":
         detail = f"{e.get('label')} {e.get('input_tokens')}→{e.get('output_tokens')} tok ${e.get('cost_usd')}"
+    elif t == "make_or_buy":
+        detail = f"{e.get('name')}: {e.get('decision', '').upper()} — {e.get('reason', '')[:70]}"
+    elif t == "trust_tier_changed":
+        detail = f"{e.get('from_tier')} → {e.get('to_tier')} (score {e.get('score')}, {e.get('reason', '')})"
+    elif t == "trust_enabled":
+        detail = f"ratchet armed at {e.get('tier')} — gateway {e.get('gateway')}"
+    elif t == "acquire_search":
+        detail = f"zero.xyz: {e.get('total')} results, {e.get('kept')} healthy for '{str(e.get('query'))[:40]}'"
+    elif t == "acquire_candidate":
+        detail = f"{e.get('name')} (${e.get('cost')}/call, success {e.get('success_rate')})"
+    elif t == "acquire_wrapped":
+        detail = f"{e.get('name')} ← {e.get('capability')}"
+    elif t == "acquire_probe":
+        detail = "paid probe OK" if e.get("ok") else f"DENIED/FAILED — {str(e.get('error'))[:60]}"
     return Text.from_markup(f"[{style}]{t:<18}[/] {detail}")
 
 

@@ -57,17 +57,48 @@ def _run_headless(bus: events.EventBus, task: str, registry: Registry):
     result = loop.run(task, registry)
     for e in bus.events:
         t = e["type"]
-        if t in ("gap_detected", "tool_promoted", "tool_failed", "verification_failed", "tool_used", "halted", "plan_updated"):
+        if t in ("gap_detected", "tool_promoted", "tool_failed", "verification_failed", "tool_used", "halted", "plan_updated", "make_or_buy", "trust_enabled", "trust_tier_changed", "acquire_wrapped"):
             print(f"  · {t}: {({k: v for k, v in e.items() if k not in ('ts', 'type', 'stderr', 'stdout')})}")
     return result
 
 
-def cmd_run(task: str, fresh: bool, no_tui: bool) -> int:
+def _start_trust_stack(bus: events.EventBus):
+    """--trust (Phase 2.2): boot the zero bridge, the trust ledger (tier0), and
+    Pomerium in front of the bridge. Returns (bridge_server, pomerium_proc).
+
+    The acquisition channel is FORGE_ZERO_BRIDGE_URL → Pomerium route
+    `zero.localhost:8901` → local bridge :8477. At tier0 the route DENIES (403):
+    the loop cannot BUY until verified promotions earn tier1. The ledger rides
+    the event bus, so privilege changes need zero manual steps."""
+    import os
+    import subprocess
+
+    from forge import trust, zero_bridge
+
+    bridge = zero_bridge.start()
+    config_path = Path("deploy/pomerium/gateway.runtime.yaml")
+    ledger = trust.TrustLedger(config_path, zero_upstream=f"http://127.0.0.1:{zero_bridge.DEFAULT_PORT}")
+    pomerium = subprocess.Popen(
+        ["pomerium", "-config", str(config_path)],
+        stdout=(Path(RUNS_DIR) / "pomerium.log").open("a"),
+        stderr=subprocess.STDOUT,
+    )
+    os.environ["FORGE_ZERO_BRIDGE_URL"] = f"http://zero.localhost:{trust.DEFAULT_PORT}"
+    bus.listeners.append(ledger.process)
+    events.emit("trust_enabled", tier="tier0", gateway=os.environ["FORGE_ZERO_BRIDGE_URL"])
+    return bridge, pomerium
+
+
+def cmd_run(task: str, fresh: bool, no_tui: bool, trust_enabled: bool = False) -> int:
     bus = events.EventBus(run_dir=RUNS_DIR)
     events.set_active(bus)
     registry = Registry(TOOLS_DIR)
     if fresh:
         registry.reset()
+
+    bridge = pomerium = None
+    if trust_enabled:
+        bridge, pomerium = _start_trust_stack(bus)
 
     try:
         if no_tui:
@@ -94,6 +125,12 @@ def cmd_run(task: str, fresh: bool, no_tui: bool) -> int:
         _print_summary(bus, result)
         return 0
     finally:
+        if pomerium is not None:
+            pomerium.terminate()
+        if bridge is not None:
+            from forge import zero_bridge
+
+            zero_bridge.stop(bridge)
         bus.close()
 
 
@@ -141,6 +178,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--keep", action="store_true", help="persist the toolbox (default behavior)")
     parser.add_argument("--no-tui", action="store_true", help="headless: plain-text trace, no terminal UI")
     parser.add_argument("--shell", action="store_true", help="interactive shell: keep prompting a persistent session (TUI left, chat right)")
+    parser.add_argument("--trust", action="store_true", help="enable the trust ratchet: Pomerium-gated Zero.xyz acquisition, tiers earned by verified promotions")
     args = parser.parse_args(argv)
 
     if args.shell:
@@ -152,7 +190,7 @@ def main(argv: list[str]) -> int:
         parser.print_help()
         return 2
     print(f"forge — model={llm.DEFAULT_MODEL}\n")
-    return cmd_run(_read_task(args.task), fresh=args.fresh, no_tui=args.no_tui)
+    return cmd_run(_read_task(args.task), fresh=args.fresh, no_tui=args.no_tui, trust_enabled=args.trust)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,9 @@ class EventBus:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.events: deque[dict[str, Any]] = deque(maxlen=maxlen)
+        # In-process subscribers (e.g. the trust ledger) notified on every emit.
+        # A listener may itself emit (re-entrancy is safe: append-only).
+        self.listeners: list[Any] = []
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.path = self.run_dir / f"{stamp}.jsonl"
         # Line-buffered append handle; flushed on every emit so a crash mid-run
@@ -61,6 +64,11 @@ class EventBus:
         self.events.append(event)
         self._fh.write(json.dumps(event, default=_json_default) + "\n")
         self._fh.flush()
+        for listener in list(self.listeners):
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001 — an observer must never break the run
+                pass
         return event
 
     def recent(self, n: int | None = None) -> list[dict[str, Any]]:

@@ -22,3 +22,7 @@ forge/tools/test_*.py
 
 # macOS
 .DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
+deploy/pomerium/gateway.runtime.yaml

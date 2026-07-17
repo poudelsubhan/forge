@@ -22,8 +22,8 @@ API_KEY=$(grep '^ANTHROPIC_API_KEY=' .env | cut -d= -f2-)
 [ -n "$API_KEY" ] || { echo "no ANTHROPIC_API_KEY in .env"; exit 1; }
 
 IMAGE="ttl.sh/forge-$(uuidgen | tr 'A-Z' 'a-z'):4h"
-echo "== build + push $IMAGE"
-docker build -q -f deploy/akash/Dockerfile -t "$IMAGE" .
+echo "== build + push $IMAGE (linux/amd64 — Akash providers are x86_64)"
+docker buildx build --platform linux/amd64 --load -q -f deploy/akash/Dockerfile -t "$IMAGE" .
 docker push -q "$IMAGE"
 
 SDL=$(mktemp /tmp/forge-sdl.XXXX.yaml)
@@ -57,15 +57,21 @@ rm -f "$SDL"
 echo "== waiting for the run to finish (polling logs for FORGE_JSONL_END)"
 OUT="runs/akash-$(date +%Y%m%d-%H%M%S).jsonl"
 DONE=0
-for _ in $(seq 1 60); do
+for i in $(seq 1 60); do
   sleep 15
+  if [ "$i" = 4 ]; then  # one-time diagnostics once the image should be pulled
+    $PS lease-status --dseq "$DSEQ" --provider "$PROVIDER" --from $KEY_NAME 2>&1 | head -20 || true
+  fi
   LOGS=$($PS lease-logs --dseq "$DSEQ" --provider "$PROVIDER" --from $KEY_NAME --tail 10000 2>/dev/null \
          | python3 -c "import json,sys
 for line in sys.stdin:
     line=line.strip()
     if not line: continue
     try: print(json.loads(line).get('message',''))
-    except Exception: print(line)") || continue
+    except Exception:
+        # provider prefixes plain-text lines with '[lease][pod] ' — strip it
+        brace = line.find('{')
+        print(line[brace:] if brace >= 0 else line)") || continue
   if echo "$LOGS" | grep -q FORGE_JSONL_END; then
     echo "$LOGS" | sed -n '/FORGE_JSONL_BEGIN/,/FORGE_JSONL_END/p' | sed '1d;$d' > "$OUT"
     DONE=1
