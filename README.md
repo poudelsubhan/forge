@@ -243,3 +243,39 @@ main.py           # CLI entry
 scripts/stats.py  # run-file metrics aggregator
 demo/             # task.txt, task2.txt, SCRIPT.md (90s beat sheet)
 ```
+
+---
+
+## Hackathon build: the zero-trust loop (Loop Engineering Hackathon, 2026-07-17)
+
+Forge grew three interlocking sponsor integrations — spec in
+`HACKATHON_SPEC.md`, recon evidence in `docs/recon/`, submission writeup in
+`docs/DEVPOST.md`, 3-minute script in `demo/hackathon/DEMO.md`.
+
+- **Make-or-buy** (`forge/acquire.py`, Zero.xyz): a capability gap now tries a
+  marketplace BUY first — search, one paid x402 probe ($0.001), an
+  LLM-authored adapter against the real payload — and the acquired tool must
+  pass the same adversarial black-box gate as a built one.
+- **Trust ratchet** (`forge/trust.py`, Pomerium): runs start at tier0 with the
+  acquisition channel *denied* (real 403s). Verified promotions earn tiers;
+  caught failures revoke them; Pomerium hot-reloads policy mid-run (~2s).
+  Run it: `uv run main.py <task> --fresh --trust`.
+- **Substrate** (`deploy/akash/`, Akash): `./scripts/akash_run.sh <task>`
+  builds the amd64 image, deploys to Akash sandbox-2, runs headless, retrieves
+  the JSONL via lease-logs, tears down. (Needs docker/colima + the funded
+  sandbox wallet — see `docs/recon/akash.md` for the three traps.)
+
+**Golden run** (`demo/hackathon/golden_run.jsonl`, replay with
+`uv run main.py --replay demo/hackathon/golden_run.jsonl --speed 0.15`):
+
+| metric | value |
+|---|---|
+| turns / halt | 11 · convergence (`final_answer`) |
+| tools promoted | 3 — 2 built, 1 **acquired via real x402 payment** |
+| unverified tools in registry | 0 (the invariant held) |
+| trust arc | tier0 denial → earned tier1 → earned tier2 |
+| BTC cross-source deviation | $0.16 (CoinGecko vs paid Coinbase feed) |
+| cost / human input | $0.37 · none |
+
+On-Akash evidence: `runs/akash-20260717-135556.jsonl` — the same loop,
+executed in a leased container on sandbox-2 ($0.11, 1 tool, converged).
