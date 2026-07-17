@@ -158,14 +158,13 @@ def cmd_replay(path: str, speed: float) -> int:
     if not recorded:
         print(f"no events in {path}", file=sys.stderr)
         return 1
-    tui.run_replay(recorded, speed=speed)
-    # quick textual summary of the replayed run
-    vm = tui.ViewModel()
-    for e in recorded:
-        vm.ingest(e)
+    vm = tui.run_replay(recorded, speed=speed)
     promoted = [n for n, t in vm.tools.items() if t["status"] == "promoted"]
     print(f"\nreplayed {len(recorded)} events from {path}")
     print(f"halt: {vm.halted}  ·  promoted: {promoted}  ·  cost: ${vm.cost:.4f}")
+    if vm.final_answer:
+        print("\n--- final answer ---")
+        print(vm.final_answer)
     return 0
 
 
