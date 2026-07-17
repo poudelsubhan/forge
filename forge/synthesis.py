@@ -28,10 +28,10 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from forge import events, identity, llm, sandbox
+from forge import events, llm, sandbox
 from forge.registry import Registry
 
 MAX_REVISIONS = 3
@@ -49,29 +49,10 @@ _IMPORT_LABELS = {
 def _imports() -> str:
     """The import allowlist string shown to the author, derived from
     sandbox.ALLOWED_IMPORTS so the prompt and the AST gate can never drift.
-    `sys` and `forge_id` are omitted — tools don't need sys (the test prompt adds
-    it for sys.exit), and forge_id is offered only when secrets are granted (see
-    _secrets_note)."""
-    hidden = {"sys", "forge_id"}
-    names = sorted(n for n in sandbox.ALLOWED_IMPORTS if n not in hidden)
+    `sys` is omitted — tools don't need it (the test prompt adds it explicitly
+    for sys.exit)."""
+    names = sorted(n for n in sandbox.ALLOWED_IMPORTS if n != "sys")
     return ", ".join(_IMPORT_LABELS.get(n, n) for n in names)
-
-
-def _secrets_note(spec: "ToolSpec") -> str:
-    """Author guidance for declared secrets — empty when the tool needs none.
-
-    The tool reads each granted credential through ``forge_id.get(NAME)``; the
-    value is brokered just-in-time and injected at runtime. The author sees only
-    the env-var names and references, never any value."""
-    if not spec.secrets:
-        return ""
-    grants = "; ".join(f"{name} (from {ref})" for name, ref in spec.secrets.items())
-    return (
-        "\n- SECRETS — this tool was granted these credentials, injected into the "
-        f"environment ONLY while it runs: {grants}. Read each via `import forge_id` "
-        "then `forge_id.get(\"ENV_NAME\")`. NEVER hardcode a secret, accept one as a "
-        "parameter, log it, or return it — read it where you use it and nowhere else."
-    )
 
 
 @dataclass
@@ -79,9 +60,6 @@ class ToolSpec:
     name: str
     purpose: str
     proposed_signature: str
-    # Secrets the tool needs, declared by reference: ENV_VAR -> op:// path. The
-    # value is brokered just-in-time at run; the tool reads it via forge_id.get.
-    secrets: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ToolSpec":
@@ -89,7 +67,6 @@ class ToolSpec:
             name=d["name"],
             purpose=d.get("purpose", ""),
             proposed_signature=d.get("proposed_signature", f"{d['name']}(...)"),
-            secrets=dict(d.get("secrets") or {}),
         )
 
 
@@ -141,7 +118,7 @@ Hard contract:
 - Imports limited to: {imports}. NOTHING else. No os, no subprocess, no eval/exec.
 - File I/O is allowed but SCOPED: use only RELATIVE paths in the current working directory (the harness provides a jailed workdir). Never use absolute paths (starting with `/` or `~`) or `..` traversal. Prefer bs4 (BeautifulSoup) for HTML parsing — it is far more robust than hand-rolled html.parser.
 - No printing and no global mutable state. Network access is allowed (use httpx). On error, raise — do not print or swallow.
-- Private helper functions (names starting with `_`) are allowed; there must be exactly one PUBLIC function.{secrets}
+- Private helper functions (names starting with `_`) are allowed; there must be exactly one PUBLIC function.
 
 Design at the right altitude (think like a senior engineer — not too specific, not too general):
 - Parameterize an axis ONLY where variation shares the SAME underlying logic. A page number, section, count, or query on the same site → a parameter with a sensible default (e.g. `page: int = 1`), because one implementation handles them. Do NOT hardcode such a value as a literal in the body.
@@ -187,7 +164,7 @@ Output ONLY the corrected Python source for the tool module — no prose, no mar
 Rules:
 - Fix the TOOL, not the test — unless the test is provably wrong (it asserts something the spec does not require). Default to fixing the tool.
 - Keep the same public function name `{name}` and the same import contract.
-- Same import allowlist ({imports}) and no-side-effects rules as before.{secrets}
+- Same import allowlist ({imports}) and no-side-effects rules as before.
 - Address the specific failure shown in the sandbox output.
 """
 
@@ -220,8 +197,7 @@ def author_tool(spec: ToolSpec) -> str:
     """LLM (plain completion) writes the tool module. One corrective retry if
     the output doesn't parse as Python."""
     system = _AUTHOR_TOOL_SYSTEM.format(
-        name=spec.name, signature=spec.proposed_signature, imports=_imports(),
-        secrets=_secrets_note(spec),
+        name=spec.name, signature=spec.proposed_signature, imports=_imports()
     )
     user = _AUTHOR_TOOL_USER.format(
         purpose=spec.purpose, name=spec.name, signature=spec.proposed_signature
@@ -262,7 +238,7 @@ def revise_tool(
     tool_code: str, test_code: str, spec: ToolSpec, result: sandbox.SandboxResult, module: str
 ) -> str:
     """LLM revises the tool given the verbatim sandbox failure."""
-    system = _REVISE_SYSTEM.format(name=spec.name, imports=_imports(), secrets=_secrets_note(spec))
+    system = _REVISE_SYSTEM.format(name=spec.name, imports=_imports())
     user = _REVISE_USER.format(
         purpose=spec.purpose,
         signature=spec.proposed_signature,
@@ -298,22 +274,7 @@ def synthesize(
         name=spec.name,
         purpose=spec.purpose,
         signature=spec.proposed_signature,
-        secrets=list(spec.secrets.values()),
     )
-
-    # Policy gate, before any code is written: if the tool declared secrets that
-    # are unconfigured or outside policy, fail fast so the agent can replan —
-    # don't author a tool that can never be granted what it needs.
-    try:
-        identity.authorize(spec.secrets, requester=spec.name)
-    except identity.IdentityError as exc:
-        registry.add_draft(
-            spec.name, tool_path.name, spec.proposed_signature, spec.purpose,
-            test_path.name, secrets=spec.secrets,
-        )
-        registry.mark_failed(spec.name)
-        events.emit("tool_failed", name=spec.name, revisions=0, last_error=str(exc))
-        return SynthesisResult(spec, "failed", registry.get(spec.name), 0, str(exc))
 
     tool_code = author_tool(spec)
     tool_path.write_text(tool_code, encoding="utf-8")
@@ -324,15 +285,14 @@ def synthesize(
     events.emit("test_drafted", name=spec.name, chars=len(test_code))
 
     registry.add_draft(
-        spec.name, tool_path.name, spec.proposed_signature, spec.purpose, test_path.name,
-        secrets=spec.secrets,
+        spec.name, tool_path.name, spec.proposed_signature, spec.purpose, test_path.name
     )
 
     last_error: str | None = None
     for attempt in range(max_revisions + 1):
         registry.mark_testing(spec.name)
         events.emit("verification_run", name=spec.name, attempt=attempt)
-        result = sandbox.run_test(tool_path, test_path, timeout=timeout, secret_refs=spec.secrets)
+        result = sandbox.run_test(tool_path, test_path, timeout=timeout)
 
         if result.passed:
             registry.promote(spec.name)

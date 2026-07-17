@@ -42,8 +42,6 @@ _CHAT_TYPES = {
     "tool_promoted",
     "tool_failed",
     "tool_used",
-    "secret_resolved",
-    "secret_denied",
     "halted",
 }
 
@@ -70,10 +68,6 @@ def _chat_line(e: dict[str, Any]) -> str | None:
         return f"[bold red]  ✗ {e.get('name')} could not be verified — gate refused it[/]"
     if t == "tool_used":
         return f"[green]  → used {e.get('name')}[/]"
-    if t == "secret_resolved":
-        return f"[magenta]  🔑 brokered {e.get('ref')} → {e.get('requester')} (just-in-time)[/]"
-    if t == "secret_denied":
-        return f"[bold red]  ⛔ denied {e.get('ref')} for {e.get('requester')} — outside policy[/]"
     if t == "halted":
         return f"[cyan]  — halted ({e.get('reason')})[/]"
     return None

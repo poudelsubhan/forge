@@ -72,29 +72,19 @@ uv run main.py demo/task.txt --fresh
 - The convergence indicator flips to stable and the run halts via
   **`final_answer`**, not a turn cap.
 
-## Beat 4 — agent identity: a real authenticated call, zero standing secrets (1:15–1:30)
+## Beat 4 — the reuse beat (1:15–1:30)
 
 ```bash
 uv run main.py demo/task2.txt --keep     # NOTE: --keep, toolbox persists
 ```
 
-- **Prereq:** a signed-in 1Password CLI session (or `OP_SERVICE_ACCOUNT_TOKEN`)
-  and `FORGE_OP_ALLOWED=op://Personal`. With no identity configured this beat is
-  dormant — the `secrets` capability isn't even offered, so skip it.
-- The agent declares the credential it needs **by reference**
-  (`op://Personal/github/credential`) — a *name*, never a value. The harness
-  brokers it **just-in-time**, the synthesized tool calls the GitHub API
-  authenticated via `forge_id`, and returns the user's login + repos. Narrate:
-  *"the agent made a real authenticated call without ever seeing the token."*
-- Watch the **Event stream**: `secret_resolved` logs the reference + mode, **never
-  the value**. The token is absent from the tool source and the audit log — the
-  whole point: *zero standing secrets, scoped to the task, gone when it's done.*
+- The Toolbox is already populated (green) and the page-1 tool is reused.
+  Narrate: *"the gate paid off once; reuse is free forever after."*
 
-> **The identity story (say this):** every agent that does something real needs a
-> credential, but none should have custody of one. Here the secret never enters
-> the model's context, the tool source, or disk — it's resolved at runtime under
-> the harness's own identity, scoped by a default-deny allowlist, and every access
-> is audited by reference. (See the "Agent identity" section in the README.)
+> **Known gap (see `planv2.md`):** today the agent may synthesize a *near-
+> duplicate* for page 2 instead of reusing/generalizing the page-1 tool. If you
+> hit that live, own it: *"this is exactly the generality problem v2 fixes —
+> tools should be parameterized, not minted per instance."*
 
 ## Beat 4b — reuse is free (optional, 0:15)
 
