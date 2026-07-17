@@ -1,0 +1,36 @@
+# Forge-on-Akash SDL template (Track C). Placeholders __IMAGE__, __API_KEY__,
+# __TASK__ are filled by scripts/akash_run.sh. Denoms are uact (chain v2 BME —
+# see docs/recon/akash.md).
+version: "2.0"
+services:
+  forge:
+    image: __IMAGE__
+    env:
+      - ANTHROPIC_API_KEY=__API_KEY__
+      - FORGE_TASK=__TASK__
+    expose:
+      - port: 8000
+        as: 80
+        to:
+          - global: true
+profiles:
+  compute:
+    forge:
+      resources:
+        cpu:
+          units: 1
+        memory:
+          size: 1Gi
+        storage:
+          size: 1Gi
+  placement:
+    dcloud:
+      pricing:
+        forge:
+          denom: uact
+          amount: 10000
+deployment:
+  forge:
+    dcloud:
+      profile: forge
+      count: 1

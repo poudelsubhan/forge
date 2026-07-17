@@ -1,0 +1,21 @@
+{{
+  "address": ":{port}",
+  "insecure_server": true,
+  "routes": [
+    {{
+      "from": "http://gate.localhost:{port}",
+      "to": "{read_upstream}",
+      "allow_public_unauthenticated_access": {read_allow}
+    }},
+    {{
+      "from": "http://zero.localhost:{port}",
+      "to": "{zero_upstream}",
+      "allow_public_unauthenticated_access": {read_allow}
+    }},
+    {{
+      "from": "http://write.localhost:{port}",
+      "to": "{write_upstream}",
+      "allow_public_unauthenticated_access": {write_allow}
+    }}
+  ]
+}}

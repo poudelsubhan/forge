@@ -1,0 +1,9 @@
+.env
+.git
+runs/
+__pycache__/
+**/__pycache__/
+forge/tools/*.py
+!forge/tools/__init__.py
+.venv/
+uv.lock
