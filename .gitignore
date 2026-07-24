@@ -19,6 +19,7 @@ runs/
 # committed. Only the seed manifest.json is tracked.
 forge/tools/*.py
 forge/tools/test_*.py
+.forge/workspaces/
 
 # macOS
 .DS_Store

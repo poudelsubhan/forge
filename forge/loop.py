@@ -57,13 +57,14 @@ class RunResult:
 # --- builtin tools -----------------------------------------------------------
 
 UPDATE_PLAN_TOOL = {
+    "type": "function",
     "name": "update_plan",
     "description": (
         "Create or revise your explicit numbered plan. Call this first to lay out "
         "steps, and again whenever a step's status changes. Mark steps done as you "
         "finish them."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "steps": {
@@ -82,10 +83,13 @@ UPDATE_PLAN_TOOL = {
             }
         },
         "required": ["steps"],
+        "additionalProperties": False,
     },
+    "strict": False,
 }
 
 REQUEST_TOOL_TOOL = {
+    "type": "function",
     "name": "request_tool",
     "description": (
         "Request synthesis of a NEW tool when no promoted tool covers a capability "
@@ -97,7 +101,7 @@ REQUEST_TOOL_TOOL = {
         "duplicate. Only request a new tool for a genuinely different capability or a "
         "different data source whose format the existing tools were not built for."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "snake_case function name, e.g. fetch_url"},
@@ -108,20 +112,25 @@ REQUEST_TOOL_TOOL = {
             },
         },
         "required": ["name", "purpose", "proposed_signature"],
+        "additionalProperties": False,
     },
+    "strict": False,
 }
 
 FINAL_ANSWER_TOOL = {
+    "type": "function",
     "name": "final_answer",
     "description": (
         "Provide the final answer to the task and end the run. Call this only when "
         "every plan step is done."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {"text": {"type": "string", "description": "The complete final answer."}},
         "required": ["text"],
+        "additionalProperties": False,
     },
+    "strict": False,
 }
 
 BUILTIN_TOOLS = [UPDATE_PLAN_TOOL, REQUEST_TOOL_TOOL, FINAL_ANSWER_TOOL]
@@ -263,17 +272,17 @@ class Session:
 
         for turn in range(1, self.max_turns + 1):
             events.emit("turn_start", turn=turn, toolbox_version=state.toolbox_version)
-            tools = registry.to_anthropic_tools() + _builtin_tools()
+            tools = registry.to_openai_tools() + _builtin_tools()
             resp = llm.complete(
                 SYSTEM_PROMPT,
                 messages,
                 tools=tools,
-                tool_choice={"type": "any", "disable_parallel_tool_use": True},
+                tool_choice="required",
                 max_tokens=4096,
                 label="agent_turn",
                 on_text=self.stream_cb,
             )
-            messages.append({"role": "assistant", "content": resp.content})
+            messages.extend(llm.output_items(resp))
 
             text = llm.text_of(resp).strip()
             if text:
@@ -303,18 +312,13 @@ class Session:
                 answer = tool_input.get("text", "")
                 state.findings["final_answer"] = answer
                 events.emit("agent_message", turn=turn, final=True, text=answer[:2000])
-                # Close the tool_use with a tool_result so the conversation stays
+                # Close the function call so the conversation stays
                 # valid for the NEXT prompt in this session.
                 messages.append(
                     {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": "Final answer delivered. Awaiting the next instruction.",
-                            }
-                        ],
+                        "type": "function_call_output",
+                        "call_id": tool_use_id,
+                        "output": "Final answer delivered. Awaiting the next instruction.",
                     }
                 )
                 events.emit("halted", reason="final_answer", turn=turn, toolbox_version=state.toolbox_version)
@@ -384,14 +388,9 @@ class Session:
             )
 
             messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": tool_use_id, "content": result_text},
-                        {"type": "text", "text": _state_summary(state, registry)},
-                    ],
-                }
+                {"type": "function_call_output", "call_id": tool_use_id, "output": result_text}
             )
+            messages.append({"role": "user", "content": _state_summary(state, registry)})
 
             if converged:
                 events.emit("halted", reason="converged", turn=turn, toolbox_version=state.toolbox_version)

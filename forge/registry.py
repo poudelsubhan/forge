@@ -3,7 +3,7 @@
 A tool is one Python file in ``forge/tools/`` exposing exactly one public
 function (type hints + docstring), plus an entry in ``manifest.json``.
 ``manifest.json`` is the single source of truth for tool state — both the TUI
-and `to_anthropic_tools()` read from it; in-memory state never drifts from disk.
+and `to_openai_tools()` read from it; in-memory state never drifts from disk.
 
 Status lifecycle:  draft → testing → failed | promoted
 Failed tools stay in the manifest (the TUI shows the graveyard — it's part of
@@ -63,7 +63,7 @@ def _json_type(annotation: Any) -> str:
 
 
 def fn_to_schema(name: str, description: str, fn: Callable[..., Any]) -> dict[str, Any]:
-    """Derive an Anthropic tool-use JSON schema from a function's signature.
+    """Derive an OpenAI function-tool schema from a function's signature.
 
     We inspect the live signature + type hints rather than ask the LLM to write
     its own schema — a model-written schema drifts from the actual function.
@@ -91,13 +91,16 @@ def fn_to_schema(name: str, description: str, fn: Callable[..., Any]) -> dict[st
 
     desc = (description or (fn.__doc__ or "")).strip() or name
     return {
+        "type": "function",
         "name": name,
         "description": desc,
-        "input_schema": {
+        "parameters": {
             "type": "object",
             "properties": properties,
             "required": required,
+            "additionalProperties": False,
         },
+        "strict": False,
     }
 
 
@@ -253,8 +256,8 @@ class Registry:
             )
         return fn
 
-    def to_anthropic_tools(self) -> list[dict[str, Any]]:
-        """Convert promoted tools to Anthropic tool-use JSON schemas."""
+    def to_openai_tools(self) -> list[dict[str, Any]]:
+        """Convert promoted tools to Responses API function-tool schemas."""
         tools: list[dict[str, Any]] = []
         for record in self.list_promoted():
             try:
@@ -265,7 +268,7 @@ class Registry:
                 # actually diagnosable in the event log (it was logged blind).
                 events.emit(
                     "error",
-                    where="to_anthropic_tools",
+                    where="to_openai_tools",
                     tool=record["name"],
                     error=f"{type(exc).__name__}: {exc}",
                 )

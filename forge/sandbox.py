@@ -56,7 +56,8 @@ ALLOWED_IMPORTS = frozenset(
         "itertools",
         "functools",
         "pathlib",  # scoped file I/O
-        "sys",  # tests legitimately use sys.exit
+        "sys",
+        "pytest",
         # web
         "httpx",
         "bs4",  # BeautifulSoup, robust HTML parsing
@@ -153,15 +154,14 @@ def run_test(
         shutil.copy(tool_file, tmp_dir / tool_file.name)
         shutil.copy(test_file, tmp_dir / test_file.name)
 
-        # Strip the environment to PATH — the ANTHROPIC_API_KEY (the secret the
-        # invariant protects) never reaches synthesized code. Network stays on
-        # (the demo domain is web tasks), so tests can hit real endpoints.
+        # Strip the environment to PATH. OpenAI and Zendesk credentials never
+        # reach synthesized code. Tests may reach the localhost mock API.
         env = {"PATH": os.environ.get("PATH", "")}
 
         started = time.monotonic()
         try:
             proc = subprocess.run(
-                [sys.executable, "-E", "-s", "-B", test_file.name],
+                [sys.executable, "-E", "-s", "-B", "-m", "pytest", "-q", test_file.name],
                 cwd=tmp_dir,
                 env=env,
                 capture_output=True,
