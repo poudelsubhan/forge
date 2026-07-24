@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,15 +13,33 @@ from pathlib import Path
 from forge import events
 
 _VALID_TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_SECRET_ENV_KEYS = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "ZENDESK_SUBDOMAIN",
+        "ZENDESK_EMAIL",
+        "ZENDESK_API_TOKEN",
+    }
+)
 _TOOL_PROMPT = """Read SPEC.md. Write tool.py containing one public function with
 the exact requested name, a typed signature, and a docstring. Follow the import
 and safety constraints exactly. Write nothing else."""
 _TEST_PROMPT = """Read SPEC.md. Write test_tool.py using pytest. Test the contract
 as a black box: use `from tool import <requested function>`, cover correctness
-and an edge case, and do not assume implementation details. Write nothing else."""
+and an edge case, and do not assume implementation details. Imports are limited
+to pytest, sys, tool, and the imports explicitly allowed by SPEC.md. Do not
+start a server or mock the network; if SPEC.md supplies a localhost service,
+call that service directly. Write nothing else."""
 _REVISE_PROMPT = """The verification test failed. Read SPEC.md and FAILURE.md.
 Fix tool.py to satisfy the contract and the test. Do not weaken or edit the
-test. Write nothing else."""
+test. Diagnose the actual runtime data structure behind any parse/key failure;
+handle semantically equivalent nested fields when the contract requires a
+normalized result. Do not copy constants, fixtures, mock payloads, or lookup
+tables from test_tool.py into the implementation. Write nothing else."""
+_REVISE_TEST_PROMPT = """The test itself was rejected by the verification gate.
+Read SPEC.md, FAILURE.md, and test_tool.py. Fix test_tool.py to test the same
+contract while obeying every import and safety constraint. You cannot see the
+implementation; do not weaken the correctness assertions. Write nothing else."""
 
 
 @dataclass(frozen=True)
@@ -56,9 +75,13 @@ def _run_codex(workspace: Path, prompt: str, timeout: float) -> str | None:
         prompt,
     ]
     try:
+        child_env = {
+            key: value for key, value in os.environ.items() if key not in _SECRET_ENV_KEYS
+        }
         proc = subprocess.run(
             command,
             cwd=workspace,
+            env=child_env,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -110,7 +133,7 @@ def synthesize(
     if not _VALID_TOOL_NAME.fullmatch(tool_name):
         raise ValueError(f"invalid tool name: {tool_name!r}")
 
-    workspace = Path(workspace_dir) / tool_name
+    workspace = (Path(workspace_dir) / tool_name).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     spec_text = f"""# Tool contract
 
@@ -173,7 +196,7 @@ def revise(
     timeout: float = 300.0,
 ) -> ToolCandidate:
     """Append verbatim sandbox output and ask Codex to revise the tool."""
-    workspace = Path(workspace_dir)
+    workspace = Path(workspace_dir).resolve()
     failure_path = workspace / "FAILURE.md"
     with failure_path.open("a", encoding="utf-8") as fh:
         fh.write("\n\n# Verification failure\n\n```text\n")
@@ -185,6 +208,27 @@ def revise(
         re.MULTILINE,
     )
     tool_name = name_match.group(1) if name_match else workspace.name
-    events.emit("revision_requested", name=tool_name, workspace=str(workspace))
-    _run_codex(workspace, _REVISE_PROMPT, timeout)
+    revise_test = "AST check failed (test)" in stderr_text
+    target = "test" if revise_test else "tool"
+    events.emit(
+        "revision_requested",
+        name=tool_name,
+        workspace=str(workspace),
+        target=target,
+    )
+    if revise_test:
+        tester = workspace / ".tester"
+        if tester.exists():
+            shutil.rmtree(tester)
+        tester.mkdir()
+        for filename in ("SPEC.md", "FAILURE.md", "test_tool.py"):
+            shutil.copy2(workspace / filename, tester / filename)
+        _run_codex(tester, _REVISE_TEST_PROMPT, timeout)
+        revised_test = tester / "test_tool.py"
+        if not revised_test.is_file():
+            raise CodexAdapterError("Codex did not revise test_tool.py")
+        shutil.copy2(revised_test, workspace / "test_tool.py")
+        shutil.rmtree(tester)
+    else:
+        _run_codex(workspace, _REVISE_PROMPT, timeout)
     return _require_files(workspace)
