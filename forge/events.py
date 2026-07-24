@@ -24,6 +24,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
     {
         "run_start",
         "turn_start",
+        "toolbox_snapshot",
         "gap_detected",
         "synthesis_requested",
         "synthesis_complete",
@@ -64,6 +65,7 @@ class EventBus:
         # Line-buffered append handle; flushed on every emit so a crash mid-run
         # still leaves a replayable log.
         self._fh = self.path.open("a", encoding="utf-8")
+        self.path.chmod(0o600)
 
     def emit(self, event_type: str, **payload: Any) -> dict[str, Any]:
         event = {"ts": time.time(), "type": event_type, **payload}

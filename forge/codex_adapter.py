@@ -13,13 +13,8 @@ from pathlib import Path
 from forge import events
 
 _VALID_TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-_SECRET_ENV_KEYS = frozenset(
-    {
-        "OPENAI_API_KEY",
-        "ZENDESK_SUBDOMAIN",
-        "ZENDESK_EMAIL",
-        "ZENDESK_API_TOKEN",
-    }
+_CHILD_ENV_ALLOWLIST = frozenset(
+    {"PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM"}
 )
 _TOOL_PROMPT = """Read SPEC.md. Write tool.py containing one public function with
 the exact requested name, a typed signature, and a docstring. Follow the import
@@ -76,7 +71,7 @@ def _run_codex(workspace: Path, prompt: str, timeout: float) -> str | None:
     ]
     try:
         child_env = {
-            key: value for key, value in os.environ.items() if key not in _SECRET_ENV_KEYS
+            key: value for key, value in os.environ.items() if key in _CHILD_ENV_ALLOWLIST
         }
         proc = subprocess.run(
             command,
