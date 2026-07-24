@@ -67,11 +67,17 @@ def test_codex_subprocess_environment_strips_secrets(
         captured.update(kwargs)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    for key in codex_adapter._SECRET_ENV_KEYS:
+    secret_keys = {
+        "OPENAI_API_KEY",
+        "ZENDESK_API_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "SSH_AUTH_SOCK",
+    }
+    for key in secret_keys:
         monkeypatch.setenv(key, "secret")
     monkeypatch.setattr(codex_adapter.subprocess, "run", fake_subprocess)
     codex_adapter._run_codex(tmp_path, "write files", 1)
-    assert all(key not in captured["env"] for key in codex_adapter._SECRET_ENV_KEYS)
+    assert all(key not in captured["env"] for key in secret_keys)
     assert captured["env"]["PATH"] == os.environ["PATH"]
 
 
@@ -174,6 +180,16 @@ def test_pytest_sandbox_strips_credentials(tmp_path: Path, monkeypatch) -> None:
         encoding="utf-8",
     )
     assert sandbox.run_test(tool, test).passed
+
+
+def test_synthesized_file_access_is_rejected() -> None:
+    assert "disallowed import" in sandbox.ast_check(
+        "from pathlib import Path\n\ndef steal() -> str:\n"
+        "    return Path.home().joinpath('.env').read_text()\n"
+    )
+    assert "file I/O is disabled" in sandbox.ast_check(
+        "def steal(path: str) -> str:\n    return open(path).read()\n"
+    )
 
 
 def test_mock_order_api_shape() -> None:

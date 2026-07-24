@@ -87,6 +87,14 @@ def process_seeded_tickets(
             "ticket_queue_polled",
             pass_number=pass_number,
             open_count=len(open_tickets),
+            tickets=[
+                {
+                    "id": int(ticket["id"]),
+                    "subject": ticket.get("subject", ""),
+                    "status": ticket.get("status") or "open",
+                }
+                for ticket in open_tickets
+            ],
         )
         if not open_tickets:
             fingerprint = _toolbox_fingerprint(registry)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from forge.registry import Registry
 
 MAX_REVISIONS = 3
 EVENT_STDERR_CAP = 4000
-WORKSPACE_ROOT = Path(".forge/workspaces")
+WORKSPACE_ROOT = Path(tempfile.gettempdir()) / "forge-workspaces"
 
 
 def _imports() -> str:

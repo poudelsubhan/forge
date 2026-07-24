@@ -16,7 +16,7 @@ this registry holds only synthesized tools.
 
 from __future__ import annotations
 
-import importlib.util
+import ast
 import inspect
 import json
 import time
@@ -25,7 +25,7 @@ import typing
 from pathlib import Path
 from typing import Any, Callable
 
-from forge import events
+from forge import events, sandbox
 
 VALID_STATUSES = frozenset({"draft", "testing", "failed", "promoted"})
 
@@ -102,6 +102,56 @@ def fn_to_schema(name: str, description: str, fn: Callable[..., Any]) -> dict[st
         },
         "strict": False,
     }
+
+
+def file_to_schema(
+    name: str, description: str, path: Path
+) -> tuple[dict[str, Any], str]:
+    """Derive a schema and display signature from source without importing it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    function = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name),
+        None,
+    )
+    if function is None:
+        raise ValueError(f"{path.name} has no function {name!r}")
+    args = function.args.posonlyargs + function.args.args
+    default_start = len(args) - len(function.args.defaults)
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    display: list[str] = []
+    for index, arg in enumerate(args):
+        annotation_text = ast.unparse(arg.annotation) if arg.annotation else "str"
+        root = annotation_text.split("[", 1)[0]
+        json_type = {
+            "str": "string",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+            "list": "array",
+            "dict": "object",
+        }.get(root, "string")
+        properties[arg.arg] = {"type": json_type, "description": f"{arg.arg} argument"}
+        text = f"{arg.arg}: {annotation_text}"
+        if index < default_start:
+            required.append(arg.arg)
+        else:
+            text += f" = {ast.unparse(function.args.defaults[index - default_start])}"
+        display.append(text)
+    return_annotation = ast.unparse(function.returns) if function.returns else "Any"
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": description or ast.get_docstring(function) or name,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+        "strict": False,
+    }
+    return schema, f"{name}({', '.join(display)}) -> {return_annotation}"
 
 
 class Registry:
@@ -214,15 +264,13 @@ class Registry:
 
     def promote(self, name: str) -> None:
         self._set_status(name, "promoted")
-        # Refresh the stored signature from the ACTUAL authored function — the
-        # builder may have added generalizing parameters (e.g. page: int = 1)
-        # beyond the agent's proposed signature. The state block shows this, so
-        # the agent can see the tool is reusable with different arguments.
         record = self._find(name)
         if record is not None:
             try:
-                fn = self._load_fn(record)
-                record["signature"] = f"{name}{inspect.signature(fn)}"
+                _, signature = file_to_schema(
+                    name, record.get("description", ""), self.tools_dir / record["file"]
+                )
+                record["signature"] = signature
                 self.save()
             except Exception:
                 pass  # keep the proposed signature if the function won't load
@@ -240,28 +288,16 @@ class Registry:
 
     # --- tool-use bridge -----------------------------------------------------
 
-    def _load_fn(self, record: dict[str, Any]) -> Callable[..., Any]:
-        path = self.tools_dir / record["file"]
-        spec = importlib.util.spec_from_file_location(
-            f"forge_tool_{record['name']}", path
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load tool module from {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        fn = getattr(module, record["name"], None)
-        if fn is None:
-            raise AttributeError(
-                f"tool file {record['file']} has no function {record['name']!r}"
-            )
-        return fn
-
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """Convert promoted tools to Responses API function-tool schemas."""
         tools: list[dict[str, Any]] = []
         for record in self.list_promoted():
             try:
-                fn = self._load_fn(record)
+                schema, _ = file_to_schema(
+                    record["name"],
+                    record["description"],
+                    self.tools_dir / record["file"],
+                )
             except Exception as exc:
                 # A promoted tool that won't import is a bug, but don't crash the
                 # whole turn — just skip it. Include the reason so the failure is
@@ -273,7 +309,7 @@ class Registry:
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 continue
-            tools.append(fn_to_schema(record["name"], record["description"], fn))
+            tools.append(schema)
         return tools
 
     def dispatch(self, name: str, args: dict[str, Any]) -> Any:
@@ -281,8 +317,7 @@ class Registry:
         record = self._find(name)
         if record is None or record["status"] != "promoted":
             raise KeyError(f"no promoted tool named {name!r}")
-        fn = self._load_fn(record)
-        result = fn(**args)
+        result = sandbox.run_tool(self.tools_dir / record["file"], name, args)
         record["uses"] = record.get("uses", 0) + 1
         self.save()
         events.emit("tool_used", name=name, uses=record["uses"])

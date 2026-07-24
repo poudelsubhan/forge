@@ -34,6 +34,9 @@ from forge.events import EventBus
 _STATUS_STYLE = {
     "draft": "yellow",
     "testing": "blue",
+    "synthesizing": "yellow",
+    "test failed": "bold red",
+    "revising": "magenta",
     "failed": "red",
     "promoted": "green",
 }
@@ -49,6 +52,7 @@ class ViewModel:
         self.toolbox_version = 0
         self.tools: dict[str, dict[str, Any]] = {}
         self.plan: list[dict[str, str]] = []
+        self.tickets: dict[int, dict[str, Any]] = {}
         self.log: list[dict[str, Any]] = []
         self.cost = 0.0
         self.in_tokens = 0
@@ -71,6 +75,15 @@ class ViewModel:
         if t == "run_start":
             self.task = e.get("task", "")
             self.model = e.get("model", "")
+        elif t == "toolbox_snapshot":
+            for record in e.get("tools", []):
+                tool = self._tool(record["name"])
+                tool.update(
+                    status=record.get("status", "draft"),
+                    revisions=record.get("revisions", 0),
+                    uses=record.get("uses", 0),
+                    signature=record.get("signature", record["name"]),
+                )
         elif t == "turn_start":
             self.turn = e.get("turn", self.turn)
             self.toolbox_version = e.get("toolbox_version", self.toolbox_version)
@@ -78,6 +91,8 @@ class ViewModel:
             tool = self._tool(e["name"])
             tool["status"] = "draft"
             tool["signature"] = e.get("signature", tool["signature"])
+        elif t == "synthesis_requested":
+            self._tool(e["name"])["status"] = "synthesizing"
         elif t == "tool_drafted":
             tool = self._tool(e["name"])
             tool["status"] = "draft"
@@ -85,12 +100,15 @@ class ViewModel:
         elif t == "verification_run":
             self._tool(e["name"])["status"] = "testing"
         elif t == "verification_failed":
+            self._tool(e["name"])["status"] = "test failed"
             excerpt = e.get("stderr") or e.get("rejected_reason") or e.get("stdout") or "(no output)"
             self.last_failure = (e["name"], excerpt)
         elif t == "tool_revised":
             tool = self._tool(e["name"])
             tool["revisions"] = e.get("revision", tool["revisions"])
             tool["status"] = "draft"
+        elif t == "revision_requested":
+            self._tool(e["name"])["status"] = "revising"
         elif t == "tool_promoted":
             tool = self._tool(e["name"])
             tool["status"] = "promoted"
@@ -104,6 +122,34 @@ class ViewModel:
             self._tool(e["name"])["uses"] = e.get("uses", self._tool(e["name"])["uses"] + 1)
         elif t == "plan_updated":
             self.plan = e.get("steps", [])
+        elif t == "ticket_started":
+            ticket_id = int(e["ticket_id"])
+            self.tickets[ticket_id] = {
+                "id": ticket_id,
+                "subject": e.get("subject", ""),
+                "status": e.get("status") or "open",
+            }
+        elif t == "ticket_queue_polled":
+            for record in e.get("tickets", []):
+                ticket_id = int(record["id"])
+                ticket = self.tickets.setdefault(ticket_id, {"id": ticket_id})
+                ticket.update(
+                    subject=record.get("subject", ""),
+                    status=record.get("status") or "open",
+                )
+        elif t == "ticket_solved":
+            ticket_id = int(e["ticket_id"])
+            ticket = self.tickets.setdefault(
+                ticket_id,
+                {"id": ticket_id, "subject": e.get("subject", ""), "status": "open"},
+            )
+            ticket["status"] = "solved"
+        elif t == "ticket_failed":
+            ticket_id = int(e["ticket_id"])
+            ticket = self.tickets.setdefault(
+                ticket_id, {"id": ticket_id, "subject": "", "status": "open"}
+            )
+            ticket["status"] = "failed"
         elif t == "convergence_check":
             self.toolbox_stable = not e.get("toolbox_changed", False)
             self.plan_stable = not e.get("plan_mutated", False)
@@ -131,7 +177,7 @@ def _toolbox_panel(vm: ViewModel) -> Panel:
         style = _STATUS_STYLE.get(tool["status"], "white")
         table.add_row(
             Text(name, style=style),
-            Text(tool["status"], style=style),
+            Text(tool["status"].upper(), style=style),
             str(tool["revisions"]),
             str(tool["uses"]),
         )
@@ -139,6 +185,36 @@ def _toolbox_panel(vm: ViewModel) -> Panel:
     failed = sum(1 for t in vm.tools.values() if t["status"] == "failed")
     subtitle = f"promoted {promoted} · failed {failed} · v{vm.toolbox_version}"
     return Panel(table, title="[bold]Toolbox[/]", subtitle=subtitle, border_style="cyan")
+
+
+def _tickets_panel(vm: ViewModel) -> Panel:
+    table = Table(expand=True, show_edge=False, pad_edge=False)
+    table.add_column("id", width=5)
+    table.add_column("subject", overflow="ellipsis")
+    table.add_column("status", justify="right")
+    if not vm.tickets:
+        table.add_row("", Text("(waiting for queue)", style="dim"), "")
+    for ticket_id, ticket in vm.tickets.items():
+        status = ticket["status"]
+        style = {
+            "solved": "green",
+            "failed": "red",
+            "open": "yellow",
+            "new": "yellow",
+            "pending": "blue",
+        }.get(status, "white")
+        table.add_row(
+            f"#{ticket_id}",
+            ticket["subject"],
+            Text(status.upper(), style=style),
+        )
+    solved = sum(1 for ticket in vm.tickets.values() if ticket["status"] == "solved")
+    return Panel(
+        table,
+        title="[bold]Tickets[/]",
+        subtitle=f"solved {solved}/{len(vm.tickets)}",
+        border_style="cyan",
+    )
 
 
 def _plan_panel(vm: ViewModel) -> Panel:
@@ -166,6 +242,9 @@ def _plan_panel(vm: ViewModel) -> Panel:
 
 _EVENT_STYLE = {
     "gap_detected": "yellow",
+    "synthesis_requested": "yellow",
+    "synthesis_complete": "yellow",
+    "revision_requested": "magenta",
     "tool_drafted": "yellow",
     "test_drafted": "yellow",
     "verification_run": "blue",
@@ -178,6 +257,12 @@ _EVENT_STYLE = {
     "plan_updated": "white",
     "convergence_check": "dim",
     "agent_message": "white",
+    "toolbox_snapshot": "dim",
+    "ticket_queue_polled": "dim",
+    "ticket_started": "yellow",
+    "ticket_solved": "green",
+    "ticket_failed": "red",
+    "ticket_queue_converged": "bold cyan",
 }
 
 
@@ -187,6 +272,8 @@ def _event_line(e: dict[str, Any]) -> Text:
     detail = ""
     if t == "gap_detected":
         detail = f"{e.get('name')} — {e.get('purpose', '')[:60]}"
+    elif t in ("synthesis_requested", "synthesis_complete", "revision_requested"):
+        detail = f"{e.get('name')}"
     elif t in ("tool_drafted", "test_drafted"):
         detail = f"{e.get('name')}"
     elif t == "verification_run":
@@ -208,6 +295,10 @@ def _event_line(e: dict[str, Any]) -> Text:
         detail = tag + e.get("text", "")[:80].replace("\n", " ")
     elif t == "llm_call":
         detail = f"{e.get('label')} {e.get('input_tokens')}→{e.get('output_tokens')} tok ${e.get('cost_usd')}"
+    elif t in ("ticket_started", "ticket_solved", "ticket_failed"):
+        detail = f"#{e.get('ticket_id')} {e.get('subject', '')[:55]}"
+    elif t == "ticket_queue_converged":
+        detail = f"{e.get('solved')} solved · pass {e.get('pass_number')}"
     return Text.from_markup(f"[{style}]{t:<18}[/] {detail}")
 
 
@@ -230,7 +321,12 @@ def _stream_panel(vm: ViewModel, height: int = 12) -> Panel:
 def build_layout(vm: ViewModel) -> Layout:
     root = Layout()
     root.split_column(Layout(name="top", ratio=3), Layout(name="bottom", ratio=2))
-    root["top"].split_row(Layout(name="toolbox"), Layout(name="plan"))
+    root["top"].split_row(
+        Layout(name="tickets"),
+        Layout(name="toolbox"),
+        Layout(name="plan"),
+    )
+    root["top"]["tickets"].update(_tickets_panel(vm))
     root["top"]["toolbox"].update(_toolbox_panel(vm))
     root["top"]["plan"].update(_plan_panel(vm))
     root["bottom"].update(_stream_panel(vm))

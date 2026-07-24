@@ -132,7 +132,7 @@ def cmd_replay(path: str, speed: float) -> int:
     return 0
 
 
-def cmd_zendesk(fresh: bool, order_api_url: str) -> int:
+def cmd_zendesk(fresh: bool, order_api_url: str, no_tui: bool = False) -> int:
     from forge.zendesk_client import ZendeskClient
     from forge.zendesk_driver import process_seeded_tickets
 
@@ -142,12 +142,31 @@ def cmd_zendesk(fresh: bool, order_api_url: str) -> int:
     if fresh:
         registry.reset()
     try:
-        with ZendeskClient() as client:
-            result = process_seeded_tickets(
-                client,
-                registry,
-                order_api_url=order_api_url,
-            )
+        holder: dict[str, object] = {}
+
+        def work() -> None:
+            try:
+                with ZendeskClient() as client:
+                    holder["result"] = process_seeded_tickets(
+                        client,
+                        registry,
+                        order_api_url=order_api_url,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                holder["error"] = exc
+
+        if no_tui:
+            work()
+        else:
+            from forge import tui
+
+            worker = threading.Thread(target=work, daemon=True)
+            worker.start()
+            tui.run_live(bus, is_done=lambda: not worker.is_alive())
+            worker.join()
+        if "error" in holder:
+            raise holder["error"]  # type: ignore[misc]
+        result = holder["result"]
         for ticket in result.tickets:
             print(f"solved #{ticket.ticket_id}: {ticket.subject} ({ticket.turns} turns)")
         print(f"queue converged={result.converged} after {result.passes} pass(es)")
@@ -185,7 +204,11 @@ def main(argv: list[str]) -> int:
         return cmd_replay(args.replay, args.speed)
     if args.zendesk:
         print(f"forge zendesk — model={llm.DEFAULT_MODEL}\n")
-        return cmd_zendesk(fresh=args.fresh, order_api_url=args.order_api_url)
+        return cmd_zendesk(
+            fresh=args.fresh,
+            order_api_url=args.order_api_url,
+            no_tui=args.no_tui,
+        )
     if not args.task:
         parser.print_help()
         return 2

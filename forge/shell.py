@@ -30,7 +30,13 @@ from textual.worker import WorkerState
 
 from forge import events, loop
 from forge.registry import Registry
-from forge.tui import ViewModel, _plan_panel, _stream_panel, _toolbox_panel
+from forge.tui import (
+    ViewModel,
+    _plan_panel,
+    _stream_panel,
+    _tickets_panel,
+    _toolbox_panel,
+)
 
 # Events surfaced in the right-hand chat pane (the rest stay in the left stream).
 _CHAT_TYPES = {
@@ -118,6 +124,7 @@ class ForgeShell(App):
     #left  { width: 58%; }
     #right { width: 42%; border-left: solid $accent; }
     #toolbox { height: auto; }
+    #tickets { height: auto; }
     #plan    { height: auto; }
     #events  { height: 1fr; }
     #chat    { height: 1fr; padding: 0 1; }
@@ -140,6 +147,7 @@ class ForgeShell(App):
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="left"):
+                yield Static(id="tickets")
                 yield Static(id="toolbox")
                 yield Static(id="plan")
                 yield Static(id="events")
@@ -173,6 +181,7 @@ class ForgeShell(App):
         vm = ViewModel()
         for e in snapshot:
             vm.ingest(e)
+        self.query_one("#tickets", Static).update(_tickets_panel(vm))
         self.query_one("#toolbox", Static).update(_toolbox_panel(vm))
         self.query_one("#plan", Static).update(_plan_panel(vm))
         self.query_one("#events", Static).update(_stream_panel(vm))

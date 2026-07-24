@@ -27,6 +27,7 @@ sandbox uses this project's venv (where ``httpx`` is installed).
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import subprocess
@@ -45,7 +46,6 @@ ALLOWED_IMPORTS = frozenset(
         "json",
         "re",
         "html",  # covers html.parser
-        "urllib",  # covers urllib.parse
         "datetime",
         "collections",
         "math",
@@ -55,7 +55,6 @@ ALLOWED_IMPORTS = frozenset(
         "string",
         "itertools",
         "functools",
-        "pathlib",  # scoped file I/O
         "sys",
         "pytest",
         # web
@@ -66,7 +65,26 @@ ALLOWED_IMPORTS = frozenset(
 
 # Attribute-call names that signal shelling out / dynamic exec.
 _BANNED_ATTR_CALLS = frozenset(
-    {"system", "popen", "Popen", "run", "call", "check_output", "check_call", "spawn"}
+    {
+        "system",
+        "popen",
+        "Popen",
+        "run",
+        "call",
+        "check_output",
+        "check_call",
+        "spawn",
+        "open",
+        "read_text",
+        "read_bytes",
+        "write_text",
+        "write_bytes",
+        "home",
+        "cwd",
+        "glob",
+        "rglob",
+        "resolve",
+    }
 )
 _BANNED_NAME_CALLS = frozenset({"eval", "exec", "__import__", "compile"})
 
@@ -107,9 +125,7 @@ def ast_check(code: str, extra_allowed: frozenset[str] | set[str] = frozenset())
             if isinstance(func, ast.Attribute) and func.attr in _BANNED_ATTR_CALLS:
                 return f"disallowed call: .{func.attr}()"
             if isinstance(func, ast.Name) and func.id == "open":
-                reason = _check_open(node)
-                if reason:
-                    return reason
+                return "file I/O is disabled for synthesized tools"
     return None
 
 
@@ -182,3 +198,46 @@ def run_test(
         stderr=proc.stderr,
         duration=round(duration, 3),
     )
+
+
+_TOOL_RUNNER = """
+import importlib.util, json, sys
+path, name = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("forge_runtime_tool", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+result = getattr(module, name)(**json.loads(sys.stdin.read()))
+sys.stdout.write(json.dumps(result, default=str, ensure_ascii=False))
+"""
+
+
+def run_tool(
+    tool_file: Path | str,
+    name: str,
+    args: dict,
+    timeout: float = 30.0,
+):
+    """Execute a promoted tool out of process with no parent credentials."""
+    tool_file = Path(tool_file)
+    reason = ast_check(tool_file.read_text(encoding="utf-8"))
+    if reason:
+        raise RuntimeError(f"AST check failed (tool): {reason}")
+    with tempfile.TemporaryDirectory(prefix="forge_tool_") as tmp:
+        tmp_dir = Path(tmp)
+        copied = tmp_dir / tool_file.name
+        shutil.copy(tool_file, copied)
+        proc = subprocess.run(
+            [sys.executable, "-E", "-s", "-B", "-c", _TOOL_RUNNER, copied.name, name],
+            cwd=tmp_dir,
+            env={"PATH": os.environ.get("PATH", "")},
+            input=json.dumps(args),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"tool exited {proc.returncode}")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("tool returned non-JSON output") from exc

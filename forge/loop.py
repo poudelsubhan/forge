@@ -260,6 +260,7 @@ class Session:
         state = AgentState(task=task)
         if not self._started:
             events.emit("run_start", task=task, model=llm.DEFAULT_MODEL, max_turns=self.max_turns)
+            events.emit("toolbox_snapshot", tools=registry.list_all())
             self.messages.append({"role": "user", "content": _initial_user(task, state, registry)})
             self._started = True
         else:
