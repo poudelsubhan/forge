@@ -40,6 +40,12 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "halted",
         "llm_call",
         "plan_updated",
+        "ticket_queue_polled",
+        "ticket_started",
+        "ticket_solved",
+        "ticket_failed",
+        "ticket_queue_converged",
+        "ticket_queue_failed",
         "agent_message",
         "error",
     }

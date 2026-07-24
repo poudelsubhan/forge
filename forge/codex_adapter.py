@@ -16,8 +16,8 @@ _TOOL_PROMPT = """Read SPEC.md. Write tool.py containing one public function wit
 the exact requested name, a typed signature, and a docstring. Follow the import
 and safety constraints exactly. Write nothing else."""
 _TEST_PROMPT = """Read SPEC.md. Write test_tool.py using pytest. Test the contract
-as a black box: import the requested function from tool, cover correctness and
-an edge case, and do not assume implementation details. Write nothing else."""
+as a black box: use `from tool import <requested function>`, cover correctness
+and an edge case, and do not assume implementation details. Write nothing else."""
 _REVISE_PROMPT = """The verification test failed. Read SPEC.md and FAILURE.md.
 Fix tool.py to satisfy the contract and the test. Do not weaken or edit the
 test. Write nothing else."""
