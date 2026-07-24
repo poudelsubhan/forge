@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +54,27 @@ def test_responses_helpers_parse_function_call() -> None:
     assert llm.output_items(response)[0]["call_id"] == "call_1"
 
 
+def test_legacy_anthropic_env_pin_does_not_reach_openai() -> None:
+    assert not llm.DEFAULT_MODEL.startswith("claude-")
+
+
+def test_codex_subprocess_environment_strips_secrets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict = {}
+
+    def fake_subprocess(command, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    for key in codex_adapter._SECRET_ENV_KEYS:
+        monkeypatch.setenv(key, "secret")
+    monkeypatch.setattr(codex_adapter.subprocess, "run", fake_subprocess)
+    codex_adapter._run_codex(tmp_path, "write files", 1)
+    assert all(key not in captured["env"] for key in codex_adapter._SECRET_ENV_KEYS)
+    assert captured["env"]["PATH"] == os.environ["PATH"]
+
+
 def test_codex_adapter_uses_separate_file_workspaces(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -85,7 +107,45 @@ def test_codex_adapter_uses_separate_file_workspaces(
     )
     assert candidate.tool_file.is_file()
     assert candidate.test_file.is_file()
+    assert candidate.workspace.is_absolute()
     assert seen[0][0] != seen[1][0]
+
+
+def test_codex_adapter_revises_rejected_test_without_tool_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "lookup_order"
+    workspace.mkdir()
+    (workspace / "SPEC.md").write_text(
+        "# Contract\n\nTool name: `lookup_order`\n",
+        encoding="utf-8",
+    )
+    (workspace / "tool.py").write_text(
+        "def lookup_order(order_id: str) -> dict:\n    return {'id': order_id}\n",
+        encoding="utf-8",
+    )
+    (workspace / "test_tool.py").write_text(
+        "import threading\nfrom tool import lookup_order\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(tester: Path, prompt: str, timeout: float) -> str:
+        assert not (tester / "tool.py").exists()
+        assert "test itself was rejected" in prompt
+        (tester / "test_tool.py").write_text(
+            "from tool import lookup_order\n\n"
+            "def test_contract():\n    assert lookup_order('x')['id'] == 'x'\n",
+            encoding="utf-8",
+        )
+        return "thread"
+
+    monkeypatch.setattr(codex_adapter, "_run_codex", fake_run)
+    candidate = codex_adapter.revise(
+        workspace,
+        "AST check failed (test): disallowed import: threading",
+    )
+    assert "threading" not in candidate.test_code
+    assert candidate.tool_code.startswith("def lookup_order")
 
 
 def test_pytest_sandbox_strips_credentials(tmp_path: Path, monkeypatch) -> None:

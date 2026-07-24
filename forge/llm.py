@@ -16,7 +16,13 @@ from forge import events
 
 load_dotenv()
 
-DEFAULT_MODEL = os.environ.get("FORGE_MODEL", "gpt-5.6")
+_configured_model = os.environ.get("FORGE_MODEL", "gpt-5.6")
+# Existing Forge checkouts may still carry the old Anthropic default in an
+# untracked .env. Treat that as stale migration state instead of sending an
+# impossible model ID to the OpenAI API.
+DEFAULT_MODEL = (
+    "gpt-5.6" if _configured_model.startswith("claude-") else _configured_model
+)
 
 _PRICING: dict[str, tuple[float, float]] = {
     "gpt-5.6": (5.0, 30.0),
@@ -70,6 +76,7 @@ def complete(
         "instructions": system,
         "input": messages,
         "max_output_tokens": max_tokens,
+        "store": False,
     }
     if tools is not None:
         kwargs["tools"] = tools
