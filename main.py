@@ -132,6 +132,31 @@ def cmd_replay(path: str, speed: float) -> int:
     return 0
 
 
+def cmd_zendesk(fresh: bool, order_api_url: str) -> int:
+    from forge.zendesk_client import ZendeskClient
+    from forge.zendesk_driver import process_seeded_tickets
+
+    bus = events.EventBus(run_dir=RUNS_DIR)
+    events.set_active(bus)
+    registry = Registry(TOOLS_DIR)
+    if fresh:
+        registry.reset()
+    try:
+        with ZendeskClient() as client:
+            result = process_seeded_tickets(
+                client,
+                registry,
+                order_api_url=order_api_url,
+            )
+        for ticket in result.tickets:
+            print(f"solved #{ticket.ticket_id}: {ticket.subject} ({ticket.turns} turns)")
+        print(f"queue converged={result.converged} after {result.passes} pass(es)")
+        print(f"run log: {bus.path}")
+        return 0 if result.converged else 1
+    finally:
+        bus.close()
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="forge", description="A self-extending agent harness.")
     parser.add_argument("task", nargs="?", help="task text, or a path to a file containing it")
@@ -141,6 +166,16 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--keep", action="store_true", help="persist the toolbox (default behavior)")
     parser.add_argument("--no-tui", action="store_true", help="headless: plain-text trace, no terminal UI")
     parser.add_argument("--shell", action="store_true", help="interactive shell: keep prompting a persistent session (TUI left, chat right)")
+    parser.add_argument(
+        "--zendesk",
+        action="store_true",
+        help="process open tickets tagged forge_demo_seed",
+    )
+    parser.add_argument(
+        "--order-api-url",
+        default="http://127.0.0.1:8377",
+        help="internal mock order API base URL",
+    )
     args = parser.parse_args(argv)
 
     if args.shell:
@@ -148,6 +183,9 @@ def main(argv: list[str]) -> int:
         return cmd_shell(fresh=args.fresh)
     if args.replay:
         return cmd_replay(args.replay, args.speed)
+    if args.zendesk:
+        print(f"forge zendesk — model={llm.DEFAULT_MODEL}\n")
+        return cmd_zendesk(fresh=args.fresh, order_api_url=args.order_api_url)
     if not args.task:
         parser.print_help()
         return 2

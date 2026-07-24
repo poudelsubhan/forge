@@ -51,7 +51,17 @@ def _install_candidate(candidate: codex_adapter.ToolCandidate, registry: Registr
     tool_path = registry.tools_dir / f"{candidate.tool_name}.py"
     test_path = registry.tools_dir / f"test_{candidate.tool_name}.py"
     shutil.copy2(candidate.tool_file, tool_path)
-    shutil.copy2(candidate.test_file, test_path)
+    test_code = candidate.test_code
+    scratch_import = f"from tool import {candidate.tool_name}"
+    promoted_import = f"from {candidate.tool_name} import {candidate.tool_name}"
+    if scratch_import not in test_code:
+        raise codex_adapter.CodexAdapterError(
+            f"test_tool.py must import the function with `{scratch_import}`"
+        )
+    test_path.write_text(
+        test_code.replace(scratch_import, promoted_import, 1),
+        encoding="utf-8",
+    )
     return tool_path, test_path
 
 
