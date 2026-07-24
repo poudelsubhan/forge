@@ -104,7 +104,7 @@ What "stable" means: a turn is stable if it did none of three things: no toolbox
 
 `manifest.json` is the single source of truth for tool state; the TUI and
 `to_anthropic_tools()` both read from it, and in-memory state never drifts from
-disk. Anthropic tool schemas are derived from `inspect.signature` + type hints —
+disk. Anthropic tool schemas are derived from `inspect.signature` + type hints;
 the LLM never writes its own schema (it would drift from the actual function).
 
 ## Quickstart
@@ -166,46 +166,46 @@ aggregates it into:
   they touched real work."*
 - **Reuse ratio**: `tool_used` events ÷ syntheses. Run 2 (`--keep`) is all
   reuse, zero synthesis.
-- **Convergence quality** — halted via `final_answer`/`converged` vs. `cap`.
-- **Cost** — per LLM call (model, input/output tokens, dollar cost, latency,
+- **Convergence quality**: halted via `final_answer`/`converged` vs. `cap`.
+- **Cost**: per LLM call (model, input/output tokens, dollar cost, latency,
   input hash) logged at the call site, aggregated into total and **per-tool**
   cost. The cost meter ships with the feature, not after.
 
 Every LLM call logs `llm_call`; every external call (the sandbox subprocess,
 synthesized tools' HTTP) is bounded by a timeout. A run that halts via `cap` (or
-any synthesis exceeding 3 revisions) is flagged loudly — both indicate prompt
-regressions.
+any synthesis exceeding 3 revisions) is flagged loudly, since both indicate
+prompt regressions.
 
 ## Capability surface & boundary
 
 What a synthesized tool *can* do is defined entirely by the AST allowlist in
-`sandbox.py` (`ALLOWED_IMPORTS`) — the one source of truth, from which the
+`sandbox.py` (`ALLOWED_IMPORTS`), the one source of truth, from which the
 author-facing prompt is derived so the two never drift. The capacity is
 deliberately small and web-shaped:
 
 - **Fetch from the network.** `httpx` for arbitrary outbound HTTP(S),
-  `urllib.parse` for URL handling. Network is intentionally ON — the demo domain
+  `urllib.parse` for URL handling. Network is intentionally ON: the demo domain
   is web tasks, and tests hit real endpoints.
 - **Parse the web.** `bs4` (BeautifulSoup) + `html` for HTML; `json` and `csv`
   for structured payloads.
-- **Read & write local files** — `open()` (read *and* write) + `pathlib`, but
+- **Read & write local files.** `open()` (read *and* write) + `pathlib`, but
   **scoped to the subprocess cwd jail**: relative paths only, no absolute paths,
   no `..` traversal.
-- **Transform data** — `re`, `string`, `datetime`, `collections`, `itertools`,
+- **Transform data.** `re`, `string`, `datetime`, `collections`, `itertools`,
   `functools`, `math`, `io`, `typing`.
 
 Everything outside that list is rejected **before the code runs**, which is also
 the boundary of what the harness can build:
 
 - **No shelling out / dynamic exec.** `os.system` / `subprocess` / `eval` /
-  `exec` / `__import__` / `compile` are all rejected — as is `import os` itself.
+  `exec` / `__import__` / `compile` are all rejected, as is `import os` itself.
 - **No off-allowlist libraries** (`requests`, `pandas`, `numpy`, …). If a tool
   needs it, the allowlist has to grow first.
 - **No file access outside the cwd jail.**
 
 In one line: Forge builds **web/API fetchers (including authenticated ones),
 HTML/JSON/CSV parsers, scoped local file read/write tools, and pure
-data-transform tools** — and nothing that shells out or imports off-allowlist.
+data-transform tools**, and nothing that shells out or imports off-allowlist.
 
 This is an **AST allowlist, not a real sandbox**: a determined adversary can
 defeat static analysis; it stops *accidents and obvious misuse*, not attacks.
@@ -243,3 +243,7 @@ main.py           # CLI entry
 scripts/stats.py  # run-file metrics aggregator
 demo/             # task.txt, task2.txt, SCRIPT.md (90s beat sheet)
 ```
+
+---
+
+*Topics: LLM agents · self-extending agents · tool synthesis · autonomous tool creation · agent harness · code generation · test-driven verification · sandboxed execution · AST allowlist · convergence-gated control loop · Anthropic Claude API · tool use / function calling · agentic loops · AI safety gates · Python*
