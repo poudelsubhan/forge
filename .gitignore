@@ -22,3 +22,15 @@ forge/tools/test_*.py
 
 # macOS
 .DS_Store
+
+# Internal/proprietary docs — do not publish
+CLAUDE.md
+AGENTS.md
+.claude/
+plan*.md
+Plan*.md
+PLAN*.md
+phase*.md
+Phase*.md
+PHASE*.md
+docs/phase-*-summary.md
